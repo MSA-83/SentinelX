@@ -1,0 +1,1 @@
+/**\n * GeoMap Component\n * A component to render a geo map using a mapping library.\n *\n * @returns {JSX.Element} Renders the GeoMap component.\n */\nconst GeoMap = () => {\n    // Your implementation here\n    return <div>GeoMap</div>;\n};\n\nexport default GeoMap;

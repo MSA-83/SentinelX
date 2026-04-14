@@ -1,15 +1,16 @@
 // src/pages/Dashboard.tsx
 // Main operational dashboard — composes all panels, map, and stream hook
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
 import { useEntityStream } from "@/hooks/useEntityStream";
 import { computeThreatAssessment } from "@/lib/threatAssessor";
-import { TopBar } from "@/components/layout/TopBar";
+import { TopBar, type MapOverlayMode } from "@/components/layout/TopBar";
 import { LeftPanel } from "@/components/layout/LeftPanel";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { MapView } from "@/components/features/MapView";
 import { StatusBar } from "@/components/features/StatusBar";
+import { CommandBar } from "@/components/features/CommandBar";
 
 // Default mission workspaces
 const DEFAULT_WORKSPACES: MissionWorkspace[] = [
@@ -73,6 +74,8 @@ export function Dashboard() {
   const [rightPanelVisible, setRightPanelVisible] = useState(true);
   const [showHotspots,      setShowHotspots]      = useState(true);
   const [showTrails,        setShowTrails]        = useState(true);
+  const [overlayMode,       setOverlayMode]       = useState<MapOverlayMode>("normal");
+  const [commandBarOpen,    setCommandBarOpen]    = useState(false);
 
   // Compute enabled domains from layer states
   const enabledDomains = useMemo<Set<DomainKey>>(() => {
@@ -104,10 +107,15 @@ export function Dashboard() {
     setSelectedEntity(null);
   }, []);
 
+  const handleCommandBarEntitySelect = useCallback((entity: SentinelEntity) => {
+    setSelectedEntity(entity);
+    setRightPanelVisible(true);
+    setCommandBarOpen(false);
+  }, []);
+
   const handleWorkspaceSelect = useCallback(
     (ws: MissionWorkspace) => {
       setActiveWorkspace(ws);
-      // Activate domains from workspace config
       for (const [domain, state] of Object.entries(layerStates)) {
         const shouldBeEnabled = ws.activeDomains.includes(domain as DomainKey);
         if (state.enabled !== shouldBeEnabled) {
@@ -118,9 +126,19 @@ export function Dashboard() {
     [layerStates, toggleLayer]
   );
 
+  // Ctrl+K global shortcut (also handled in TopBar, but Dashboard is the source of truth)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setCommandBarOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   return (
-    // h-screen + w-screen ensures the root fills exactly the viewport
-    // overflow-hidden prevents any scroll on the shell itself
     <div className="flex flex-col w-screen h-screen overflow-hidden bg-sx-bg">
 
       {/* ── Top classification + nav bar ────────────────────────── */}
@@ -132,6 +150,9 @@ export function Dashboard() {
         totalEntityCount={totalEntityCount}
         lastSync={lastSync}
         onToggleSidebar={() => setLeftPanelVisible((v) => !v)}
+        onOpenCommandBar={() => setCommandBarOpen(true)}
+        overlayMode={overlayMode}
+        onOverlayModeChange={setOverlayMode}
       />
 
       {/* ── Main content — flex-1 min-h-0 lets map fill remaining space ── */}
@@ -157,6 +178,7 @@ export function Dashboard() {
             selectedEntityId={selectedEntity?.id ?? null}
             showHotspots={showHotspots}
             showTrails={showTrails}
+            overlayMode={overlayMode}
           />
         </div>
 
@@ -167,6 +189,7 @@ export function Dashboard() {
           selectedEntity={selectedEntity}
           onClearSelection={handleClearSelection}
           threatAssessment={threatAssessment}
+          entities={filteredEntities}
           visible={rightPanelVisible}
         />
       </div>
@@ -180,6 +203,16 @@ export function Dashboard() {
         showTrails={showTrails}
         onToggleHotspots={() => setShowHotspots((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
+      />
+
+      {/* ── Global command palette overlay (Ctrl+K) ────────────── */}
+      <CommandBar
+        open={commandBarOpen}
+        onClose={() => setCommandBarOpen(false)}
+        entities={filteredEntities}
+        onEntitySelect={handleCommandBarEntitySelect}
+        onDomainToggle={toggleLayer}
+        enabledDomains={enabledDomains}
       />
     </div>
   );

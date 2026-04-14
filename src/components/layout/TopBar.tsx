@@ -1,7 +1,11 @@
+
 // src/components/layout/TopBar.tsx
 import { useState, useEffect } from "react";
 import type { ThreatAssessment } from "@/types/entities";
 import { severityToColor } from "@/lib/threatAssessor";
+import { ThreatMeter } from "@/components/features/ThreatMeter";
+
+export type MapOverlayMode = "normal" | "flir" | "nightvision";
 
 interface TopBarProps {
   threatAssessment: ThreatAssessment;
@@ -11,6 +15,9 @@ interface TopBarProps {
   totalEntityCount: number;
   lastSync: string;
   onToggleSidebar: () => void;
+  onOpenCommandBar: () => void;
+  overlayMode: MapOverlayMode;
+  onOverlayModeChange: (mode: MapOverlayMode) => void;
 }
 
 const THREAT_LEVEL_LABELS: Record<string, string> = {
@@ -29,6 +36,9 @@ export function TopBar({
   totalEntityCount,
   lastSync,
   onToggleSidebar,
+  onOpenCommandBar,
+  overlayMode,
+  onOverlayModeChange,
 }: TopBarProps) {
   const [time, setTime] = useState(() => new Date());
   const [blinkState, setBlinkState] = useState(true);
@@ -39,10 +49,22 @@ export function TopBar({
     return () => { clearInterval(tick); clearInterval(blink); };
   }, []);
 
-  const utcTime = time.toUTCString().split(" ")[4];
-  const utcDate = time.toISOString().split("T")[0];
+  const utcTime    = time.toUTCString().split(" ")[4];
+  const utcDate    = time.toISOString().split("T")[0];
   const threatColor = severityToColor(threatAssessment.globalThreatLevel);
-  const isCritical = threatAssessment.globalThreatLevel === "CRITICAL";
+  const isCritical  = threatAssessment.globalThreatLevel === "CRITICAL";
+
+  // Keyboard shortcut for command bar
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        onOpenCommandBar();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onOpenCommandBar]);
 
   return (
     <div className="flex-shrink-0 z-50">
@@ -97,52 +119,64 @@ export function TopBar({
         </div>
 
         {/* Center: Threat Level */}
-        <div className="flex items-center gap-6 absolute left-1/2 -translate-x-1/2">
-          <div className="flex items-center gap-3">
-            {/* Threat Index Arc */}
-            <div className="relative flex items-center justify-center w-10 h-10">
-              <svg viewBox="0 0 40 40" className="absolute inset-0 w-full h-full -rotate-90">
-                <circle cx="20" cy="20" r="16" fill="none" stroke="#1e3a5f" strokeWidth="3" />
-                <circle
-                  cx="20" cy="20" r="16"
-                  fill="none"
-                  stroke={threatColor}
-                  strokeWidth="3"
-                  strokeLinecap="round"
-                  strokeDasharray={`${(threatAssessment.threatIndex / 100) * 100.5} 100.5`}
-                  style={{ filter: `drop-shadow(0 0 4px ${threatColor})`, transition: "stroke-dasharray 1s ease" }}
-                />
-              </svg>
-              <span className="font-mono text-[10px] font-bold relative z-10" style={{ color: threatColor }}>
-                {threatAssessment.threatIndex}
-              </span>
+        <div className="flex items-center gap-4 absolute left-1/2 -translate-x-1/2">
+          <ThreatMeter assessment={threatAssessment} size={48} />
+          <div>
+            <div className="font-mono text-[9px] text-sx-text-muted tracking-widest">
+              THREAT LEVEL
             </div>
-
-            <div>
-              <div className="font-mono text-[9px] text-sx-text-muted tracking-widest uppercase">
-                THREAT INDEX
-              </div>
-              <div
-                className="font-display font-bold text-xs tracking-wider"
-                style={{
-                  color: threatColor,
-                  textShadow: isCritical && blinkState ? `0 0 12px ${threatColor}` : "none",
-                }}
-              >
-                {threatAssessment.globalThreatLevel}
-              </div>
+            <div
+              className="font-display font-bold text-xs tracking-wider"
+              style={{
+                color: threatColor,
+                textShadow: isCritical && blinkState ? `0 0 12px ${threatColor}` : "none",
+              }}
+            >
+              {threatAssessment.globalThreatLevel}
             </div>
-
-            {threatAssessment.activeCrisisZones.length > 0 && (
-              <div className="font-mono text-[9px] text-sx-amber border border-sx-amber/30 bg-sx-amber/10 px-2 py-0.5 rounded">
-                {threatAssessment.activeCrisisZones.length} ACTIVE AO{threatAssessment.activeCrisisZones.length !== 1 ? "s" : ""}
-              </div>
-            )}
           </div>
+          {threatAssessment.activeCrisisZones.length > 0 && (
+            <div className="hidden xl:block font-mono text-[9px] text-sx-amber border border-sx-amber/30 bg-sx-amber/10 px-2 py-0.5 rounded">
+              {threatAssessment.activeCrisisZones.length} ACTIVE AO{threatAssessment.activeCrisisZones.length !== 1 ? "s" : ""}
+            </div>
+          )}
         </div>
 
-        {/* Right: System Status + Time */}
-        <div className="flex items-center gap-5 text-right">
+        {/* Right: Overlay modes + Search + Status + Time */}
+        <div className="flex items-center gap-3 text-right">
+          {/* Map overlay mode */}
+          <div className="hidden lg:flex items-center gap-1 rounded p-0.5" style={{ background: "#0a0f1e", border: "1px solid #0f2040" }}>
+            {(["normal", "flir", "nightvision"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => onOverlayModeChange(mode)}
+                className="px-2 py-1 rounded font-mono text-[8px] uppercase tracking-wider transition-all"
+                style={{
+                  background: overlayMode === mode ? (mode === "flir" ? "rgba(249,115,22,0.2)" : mode === "nightvision" ? "rgba(16,185,129,0.15)" : "rgba(0,212,255,0.12)") : "transparent",
+                  color: overlayMode === mode ? (mode === "flir" ? "#f97316" : mode === "nightvision" ? "#10b981" : "#00d4ff") : "#334155",
+                  border: overlayMode === mode ? `1px solid ${mode === "flir" ? "#f9731630" : mode === "nightvision" ? "#10b98130" : "#00d4ff30"}` : "1px solid transparent",
+                }}
+              >
+                {mode === "normal" ? "TACT" : mode === "flir" ? "FLIR" : "NV"}
+              </button>
+            ))}
+          </div>
+
+          {/* Command bar trigger */}
+          <button
+            onClick={onOpenCommandBar}
+            className="hidden md:flex items-center gap-2 px-2 py-1 rounded font-mono text-[9px] transition-all"
+            style={{
+              background: "#0a0f1e",
+              border: "1px solid #0f2040",
+              color: "#334155",
+            }}
+            title="Open command bar (Ctrl+K)"
+          >
+            <span>⌕</span>
+            <span>SEARCH</span>
+            <kbd className="px-1 py-0.5 rounded text-[8px]" style={{ background: "#1e3a5f", color: "#475569" }}>⌃K</kbd>
+          </button>
           {/* Metrics */}
           <div className="hidden lg:flex items-center gap-4">
             <div className="text-center">
@@ -168,21 +202,7 @@ export function TopBar({
             </div>
             <div className="font-mono text-[9px] text-sx-text-muted">{utcDate} UTC</div>
           </div>
-
-          {/* Connection status */}
-          <div className="flex items-center gap-1.5">
-            <div
-              className={`w-2 h-2 rounded-full ${isConnected ? "bg-sx-green" : "bg-sx-red"}`}
-              style={{
-                boxShadow: isConnected ? "0 0 6px #10b981" : "0 0 6px #ef4444",
-                animation: isConnected ? "pulse 2s infinite" : "none",
-              }}
-            />
-            <span className="font-mono text-[9px] text-sx-text-muted hidden md:block">
-              {isConnected ? "LIVE" : "OFFLINE"}
-            </span>
-          </div>
-        </div>
+        </div> {/* This closing div tag was missing */}
       </div>
 
       {/* Crisis alert strip */}

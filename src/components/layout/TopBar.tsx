@@ -18,6 +18,8 @@ interface TopBarProps {
   onOpenCommandBar: () => void;
   overlayMode: MapOverlayMode;
   onOverlayModeChange: (mode: MapOverlayMode) => void;
+  onOpenCopilot?: () => void;
+  copilotOpen?: boolean;
 }
 
 const THREAT_LEVEL_LABELS: Record<string, string> = {
@@ -39,6 +41,8 @@ export function TopBar({
   onOpenCommandBar,
   overlayMode,
   onOverlayModeChange,
+  onOpenCopilot,
+  copilotOpen,
 }: TopBarProps) {
   const [time, setTime] = useState(() => new Date());
   const [blinkState, setBlinkState] = useState(true);
@@ -177,6 +181,23 @@ export function TopBar({
             <span>SEARCH</span>
             <kbd className="px-1 py-0.5 rounded text-[8px]" style={{ background: "#1e3a5f", color: "#475569" }}>⌃K</kbd>
           </button>
+
+          {/* AI Copilot toggle */}
+          {onOpenCopilot && (
+            <button
+              onClick={onOpenCopilot}
+              className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded font-mono text-[9px] transition-all"
+              style={{
+                background: copilotOpen ? "rgba(168,85,247,0.15)" : "#0a0f1e",
+                border: copilotOpen ? "1px solid rgba(168,85,247,0.35)" : "1px solid #0f2040",
+                color: copilotOpen ? "#a855f7" : "#334155",
+              }}
+              title="AI Analyst (Ctrl+I)"
+            >
+              <span>✦</span>
+              <span>AI</span>
+            </button>
+          )}
           {/* Metrics */}
           <div className="hidden lg:flex items-center gap-4">
             <div className="text-center">

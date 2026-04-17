@@ -1,5 +1,5 @@
 // src/pages/Dashboard.tsx
-// Main operational dashboard — composes all panels, map, and stream hook
+// Main operational dashboard — full-featured map-centric view
 
 import { useState, useMemo, useCallback, useEffect } from "react";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
@@ -11,8 +11,8 @@ import { RightPanel } from "@/components/layout/RightPanel";
 import { MapView } from "@/components/features/MapView";
 import { StatusBar } from "@/components/features/StatusBar";
 import { CommandBar } from "@/components/features/CommandBar";
+import { AICopilot } from "@/components/features/AICopilot";
 
-// Default mission workspaces
 const DEFAULT_WORKSPACES: MissionWorkspace[] = [
   {
     id: "ws-global",
@@ -76,8 +76,8 @@ export function Dashboard() {
   const [showTrails,        setShowTrails]        = useState(true);
   const [overlayMode,       setOverlayMode]       = useState<MapOverlayMode>("normal");
   const [commandBarOpen,    setCommandBarOpen]    = useState(false);
+  const [copilotOpen,       setCopilotOpen]       = useState(false);
 
-  // Compute enabled domains from layer states
   const enabledDomains = useMemo<Set<DomainKey>>(() => {
     const enabled = new Set<DomainKey>();
     for (const [domain, state] of Object.entries(layerStates)) {
@@ -86,13 +86,11 @@ export function Dashboard() {
     return enabled;
   }, [layerStates]);
 
-  // Filter entities by enabled domains
   const filteredEntities = useMemo(
     () => entities.filter((e) => enabledDomains.has(e.domain)),
     [entities, enabledDomains]
   );
 
-  // Compute threat assessment from filtered entity set
   const threatAssessment = useMemo(
     () => computeThreatAssessment(filteredEntities),
     [filteredEntities]
@@ -118,20 +116,21 @@ export function Dashboard() {
       setActiveWorkspace(ws);
       for (const [domain, state] of Object.entries(layerStates)) {
         const shouldBeEnabled = ws.activeDomains.includes(domain as DomainKey);
-        if (state.enabled !== shouldBeEnabled) {
-          toggleLayer(domain as DomainKey);
-        }
+        if (state.enabled !== shouldBeEnabled) toggleLayer(domain as DomainKey);
       }
     },
     [layerStates, toggleLayer]
   );
 
-  // Ctrl+K global shortcut (also handled in TopBar, but Dashboard is the source of truth)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") {
         e.preventDefault();
         setCommandBarOpen((v) => !v);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "i") {
+        e.preventDefault();
+        setCopilotOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", handler);
@@ -139,9 +138,7 @@ export function Dashboard() {
   }, []);
 
   return (
-    <div className="flex flex-col w-screen h-screen overflow-hidden bg-sx-bg">
-
-      {/* ── Top classification + nav bar ────────────────────────── */}
+    <div className="flex flex-col w-full h-full overflow-hidden bg-sx-bg">
       <TopBar
         threatAssessment={threatAssessment}
         isConnected={isConnected}
@@ -153,12 +150,11 @@ export function Dashboard() {
         onOpenCommandBar={() => setCommandBarOpen(true)}
         overlayMode={overlayMode}
         onOverlayModeChange={setOverlayMode}
+        onOpenCopilot={() => setCopilotOpen((v) => !v)}
+        copilotOpen={copilotOpen}
       />
 
-      {/* ── Main content — flex-1 min-h-0 lets map fill remaining space ── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-
-        {/* Left domain/layer control panel */}
         <LeftPanel
           layerStates={layerStates}
           onToggleLayer={toggleLayer}
@@ -169,7 +165,6 @@ export function Dashboard() {
           visible={leftPanelVisible}
         />
 
-        {/* Tactical map — flex-1 min-w-0 so it shrinks when panels appear */}
         <div className="flex-1 min-w-0 relative">
           <MapView
             entities={filteredEntities}
@@ -182,7 +177,6 @@ export function Dashboard() {
           />
         </div>
 
-        {/* Right alert/intel panel */}
         <RightPanel
           events={events}
           onAcknowledge={acknowledgeEvent}
@@ -194,7 +188,6 @@ export function Dashboard() {
         />
       </div>
 
-      {/* ── Bottom status / telemetry bar ────────────────────────── */}
       <StatusBar
         layerStates={layerStates}
         lastSync={lastSync}
@@ -205,7 +198,6 @@ export function Dashboard() {
         onToggleTrails={() => setShowTrails((v) => !v)}
       />
 
-      {/* ── Global command palette overlay (Ctrl+K) ────────────── */}
       <CommandBar
         open={commandBarOpen}
         onClose={() => setCommandBarOpen(false)}
@@ -214,6 +206,14 @@ export function Dashboard() {
         onDomainToggle={toggleLayer}
         enabledDomains={enabledDomains}
       />
+
+      {copilotOpen && (
+        <AICopilot
+          entities={filteredEntities}
+          threatAssessment={threatAssessment}
+          onClose={() => setCopilotOpen(false)}
+        />
+      )}
     </div>
   );
 }

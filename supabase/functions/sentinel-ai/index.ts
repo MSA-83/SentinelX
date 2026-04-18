@@ -18,11 +18,12 @@ Deno.serve(async (req: Request) => {
     }
 
     // OnSpace AI endpoint
-    const response = await fetch("https://ai.onspace.ai/v1/chat/completions", {
+    const onspaceAiBase = Deno.env.get("ONSPACE_AI_BASE_URL") ?? "https://ai.onspace.ai";
+    const response = await fetch(`${onspaceAiBase}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("ONSPACE_AI_KEY") ?? ""}`,
+        "Authorization": `Bearer ${Deno.env.get("ONSPACE_AI_API_KEY") ?? ""}`,
       },
       body: JSON.stringify({
         model,

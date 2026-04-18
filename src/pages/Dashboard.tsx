@@ -2,6 +2,7 @@
 // Main operational dashboard — full-featured map-centric view
 
 import { useState, useMemo, useCallback, useEffect } from "react";
+import { useOutletContext } from "react-router-dom";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
 import { useEntityStream } from "@/hooks/useEntityStream";
 import { computeThreatAssessment } from "@/lib/threatAssessor";
@@ -68,6 +69,7 @@ export function Dashboard() {
     toggleLayer,
   } = useEntityStream();
 
+  const outletCtx = useOutletContext<{ navCollapsed: boolean; toggleNav: () => void } | undefined>();
   const [selectedEntity,    setSelectedEntity]    = useState<SentinelEntity | null>(null);
   const [activeWorkspace,   setActiveWorkspace]   = useState<MissionWorkspace>(DEFAULT_WORKSPACES[0]);
   const [leftPanelVisible,  setLeftPanelVisible]  = useState(true);
@@ -146,7 +148,7 @@ export function Dashboard() {
         messageRate={messageRate}
         totalEntityCount={totalEntityCount}
         lastSync={lastSync}
-        onToggleSidebar={() => setLeftPanelVisible((v) => !v)}
+        onToggleSidebar={() => { setLeftPanelVisible((v) => !v); outletCtx?.toggleNav?.(); }}
         onOpenCommandBar={() => setCommandBarOpen(true)}
         overlayMode={overlayMode}
         onOverlayModeChange={setOverlayMode}

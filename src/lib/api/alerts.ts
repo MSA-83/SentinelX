@@ -1,12 +1,12 @@
 // src/lib/api/alerts.ts
 import { supabase } from "@/lib/supabase";
-import type { DomainKey, SeverityLevel } from "@/types/entities";
+import type { StreamEvent } from "@/types/entities";
 
-export interface PersistedAlert {
+export interface DbAlert {
   id: string;
   entity_id?: string;
-  domain: DomainKey;
-  severity: SeverityLevel;
+  domain: string;
+  severity: string;
   title: string;
   description?: string;
   position?: { lat: number; lon: number };
@@ -18,7 +18,7 @@ export interface PersistedAlert {
 }
 
 export const alertsApi = {
-  async list(limit = 100): Promise<PersistedAlert[]> {
+  async list(limit = 100): Promise<DbAlert[]> {
     const { data, error } = await supabase
       .from("alerts_history")
       .select("*")
@@ -28,29 +28,54 @@ export const alertsApi = {
     return data ?? [];
   },
 
-  async persist(alert: Omit<PersistedAlert, "id" | "created_at" | "acknowledged">): Promise<PersistedAlert> {
+  async persist(event: StreamEvent): Promise<DbAlert | null> {
     const { data, error } = await supabase
       .from("alerts_history")
-      .insert({ ...alert, acknowledged: false })
+      .insert({
+        entity_id: event.entityId,
+        domain: event.domain,
+        severity: event.severity,
+        title: event.title,
+        description: event.description,
+        position: event.position,
+        acknowledged: false,
+      })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      console.warn("Alert persist failed:", error.message);
+      return null;
+    }
     return data;
   },
 
   async acknowledge(id: string, userId: string): Promise<void> {
     const { error } = await supabase
       .from("alerts_history")
-      .update({ acknowledged: true, acknowledged_by: userId, acknowledged_at: new Date().toISOString() })
+      .update({
+        acknowledged: true,
+        acknowledged_by: userId,
+        acknowledged_at: new Date().toISOString(),
+      })
       .eq("id", id);
     if (error) throw error;
   },
 
-  async attachToCase(alertId: string, caseId: string): Promise<void> {
+  async linkToCase(alertId: string, caseId: string): Promise<void> {
     const { error } = await supabase
       .from("alerts_history")
       .update({ case_id: caseId })
       .eq("id", alertId);
     if (error) throw error;
+  },
+
+  async getUnacknowledged(): Promise<DbAlert[]> {
+    const { data, error } = await supabase
+      .from("alerts_history")
+      .select("*")
+      .eq("acknowledged", false)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return data ?? [];
   },
 };

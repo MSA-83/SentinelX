@@ -13,6 +13,9 @@ import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { ExecutiveSummaryPage } from "@/pages/ExecutiveSummaryPage";
 import { WorkspaceManagerPage } from "@/pages/WorkspaceManagerPage";
 import { AdminPage } from "@/pages/AdminPage";
+import { GeofencePage } from "@/pages/GeofencePage";
+import { KnowledgeGraphPage } from "@/pages/KnowledgeGraphPage";
+import { SigintPage } from "@/pages/SigintPage";
 import { NotFound } from "@/pages/NotFound";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -47,6 +50,9 @@ function AppRoutes() {
         <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/exec" element={<ExecutiveSummaryPage />} />
         <Route path="/workspaces" element={<WorkspaceManagerPage />} />
+        <Route path="/geofences" element={<GeofencePage />} />
+        <Route path="/graph" element={<KnowledgeGraphPage />} />
+        <Route path="/sigint" element={<SigintPage />} />
         <Route path="/admin" element={<AdminPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />

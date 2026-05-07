@@ -265,14 +265,17 @@ export function MapView({
   const mapRef        = useRef<LeafletMap | null>(null);
   const tileRef       = useRef<TileLayer | null>(null);
   const hotspotRef    = useRef<LayerGroup | null>(null);
+  const clusterRef    = useRef<LayerGroup | null>(null);
   const markersRef    = useRef<Map<string, Marker>>(new Map());
   const trailsRef     = useRef<Map<string, Polyline>>(new Map());
   const LRef          = useRef<typeof import("leaflet") | null>(null);
+  const clusterModeRef = useRef(true);
 
   const [mapMode,      setMapMode]      = useState<MapMode>("dark");
   const [leafletReady, setLeafletReady] = useState(false);
   const [entityCount,  setEntityCount]  = useState(0);
   const [mapZoom,      setMapZoom]      = useState(3);
+  const [clusterMode,  setClusterMode]  = useState(true);
   const [cursorPos,    setCursorPos]    = useState<{ lat: number; lon: number } | null>(null);
 
   // Overlay mode label
@@ -321,6 +324,33 @@ export function MapView({
 
     hotspotRef.current = L.layerGroup().addTo(map);
 
+    // Marker cluster group (uses plain LayerGroup as fallback)
+    const makeClusterGroup = () => {
+      const MCG = (L as any).markerClusterGroup;
+      if (MCG) {
+        return MCG({
+          chunkedLoading: true,
+          maxClusterRadius: 55,
+          spiderfyOnMaxZoom: true,
+          showCoverageOnHover: false,
+          iconCreateFunction: (cluster: any) => {
+            const n = cluster.getChildCount();
+            const col = n >= 20 ? "#ef4444" : n >= 10 ? "#f59e0b" : "#00d4ff";
+            const sz  = n >= 20 ? 44 : n >= 10 ? 38 : 32;
+            const rgb = n >= 20 ? "239,68,68" : n >= 10 ? "245,158,11" : "0,212,255";
+            return (L as any).divIcon({
+              className: "",
+              html: `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:rgba(${rgb},0.14);border:1.5px solid ${col};display:flex;align-items:center;justify-content:center;font-family:'Share Tech Mono',monospace;font-size:10px;font-weight:bold;color:${col};box-shadow:0 0 10px ${col}35">${n}</div>`,
+              iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
+            });
+          },
+        });
+      }
+      return L.layerGroup();
+    };
+    clusterRef.current = makeClusterGroup();
+    clusterRef.current.addTo(map);
+
     map.on("zoomend",      () => setMapZoom(map.getZoom()));
     map.on("mousemove",    (e) => setCursorPos({ lat: e.latlng.lat, lon: e.latlng.lng }));
     map.on("mouseout",     () => setCursorPos(null));
@@ -328,8 +358,9 @@ export function MapView({
     mapRef.current = map;
     return () => {
       map.remove();
-      mapRef.current  = null;
-      tileRef.current = null;
+      mapRef.current     = null;
+      tileRef.current    = null;
+      clusterRef.current = null;
     };
   }, [leafletReady]);
 
@@ -386,20 +417,29 @@ export function MapView({
     });
   }, [showHotspots, leafletReady]);
 
+  // Sync clusterModeRef so renderEntities always sees the latest value
+  useEffect(() => { clusterModeRef.current = clusterMode; }, [clusterMode]);
+
   // Render / update entity markers
   const renderEntities = useCallback(() => {
-    const L   = LRef.current;
-    const map = mapRef.current;
-    if (!L || !map) return;
+    const L      = LRef.current;
+    const map    = mapRef.current;
+    const group  = clusterRef.current;
+    if (!L || !map || !group) return;
+
+    const useClusters = clusterModeRef.current && !!(L as any).markerClusterGroup;
 
     const visible = entities.filter((e) => enabledDomains.has(e.domain));
     const visSet  = new Set(visible.map((e) => e.id));
 
     for (const [id, marker] of markersRef.current) {
-      if (!visSet.has(id)) { marker.remove(); markersRef.current.delete(id); }
+      if (!visSet.has(id)) {
+        (group as any).removeLayer ? (group as any).removeLayer(marker) : marker.remove();
+        markersRef.current.delete(id);
+      }
     }
     for (const [id, trail] of trailsRef.current) {
-      if (!visSet.has(id)) { trail.remove();  trailsRef.current.delete(id);  }
+      if (!visSet.has(id)) { trail.remove(); trailsRef.current.delete(id); }
     }
 
     for (const entity of visible) {
@@ -415,13 +455,16 @@ export function MapView({
       } else {
         const marker = L.marker(latlng, { icon, riseOnHover: true })
           .bindPopup(buildPopupHtml(entity), {
-            maxWidth:       280,
-            className:      "sx-popup",
-            closeButton:    true,
-            autoPanPadding: [40, 40],
+            maxWidth: 280, className: "sx-popup",
+            closeButton: true, autoPanPadding: [40, 40],
           })
-          .on("click", () => onEntitySelect(entity))
-          .addTo(map);
+          .on("click", () => onEntitySelect(entity));
+
+        if (useClusters) {
+          (group as any).addLayer(marker);
+        } else {
+          marker.addTo(map);
+        }
         markersRef.current.set(entity.id, marker);
       }
 
@@ -449,6 +492,14 @@ export function MapView({
 
     setEntityCount(visible.length);
   }, [entities, enabledDomains, selectedEntityId, showTrails, onEntitySelect]);
+
+  // When cluster mode toggles, clear all markers so they're re-added to the right group
+  useEffect(() => {
+    const group = clusterRef.current;
+    if (!group) return;
+    if ((group as any).clearLayers) (group as any).clearLayers();
+    markersRef.current.clear();
+  }, [clusterMode]);
 
   useEffect(() => { renderEntities(); }, [renderEntities]);
 
@@ -545,8 +596,27 @@ export function MapView({
         </div>
       </div>
 
-      {/* BL — Map mode toggle */}
+      {/* BL — Map mode toggle + cluster toggle */}
       <div className="absolute z-[402] flex flex-col gap-1" style={{ bottom: 44, left: 12 }}>
+        <button
+          onClick={() => setClusterMode((v) => !v)}
+          style={{
+            background:     clusterMode ? "rgba(168,85,247,0.18)" : "rgba(13,20,36,0.88)",
+            color:          clusterMode ? "#a855f7" : "#475569",
+            border:         clusterMode ? "1px solid rgba(168,85,247,0.4)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace",
+            fontSize:       9,
+            letterSpacing:  "0.1em",
+            padding:        "3px 8px",
+            borderRadius:   2,
+            cursor:         "pointer",
+            textTransform:  "uppercase",
+            transition:     "all 0.15s",
+          }}
+        >
+          {clusterMode ? "⬡ CLUSTER" : "○ SCATTER"}
+        </button>
         {(["dark", "satellite"] as const).map((mode) => (
           <button
             key={mode}

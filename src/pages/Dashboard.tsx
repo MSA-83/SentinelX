@@ -154,6 +154,8 @@ export function Dashboard() {
         onOverlayModeChange={setOverlayMode}
         onOpenCopilot={() => setCopilotOpen((v) => !v)}
         copilotOpen={copilotOpen}
+        events={events}
+        onAcknowledgeEvent={acknowledgeEvent}
       />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">

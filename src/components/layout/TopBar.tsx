@@ -1,9 +1,10 @@
 
 // src/components/layout/TopBar.tsx
 import { useState, useEffect } from "react";
-import type { ThreatAssessment } from "@/types/entities";
+import type { ThreatAssessment, StreamEvent } from "@/types/entities";
 import { severityToColor } from "@/lib/threatAssessor";
 import { ThreatMeter } from "@/components/features/ThreatMeter";
+import { NotificationCenter } from "@/components/features/NotificationCenter";
 
 export type MapOverlayMode = "normal" | "flir" | "nightvision";
 
@@ -20,6 +21,8 @@ interface TopBarProps {
   onOverlayModeChange: (mode: MapOverlayMode) => void;
   onOpenCopilot?: () => void;
   copilotOpen?: boolean;
+  events?: StreamEvent[];
+  onAcknowledgeEvent?: (id: string) => void;
 }
 
 const THREAT_LEVEL_LABELS: Record<string, string> = {
@@ -43,9 +46,14 @@ export function TopBar({
   onOverlayModeChange,
   onOpenCopilot,
   copilotOpen,
+  events,
+  onAcknowledgeEvent,
 }: TopBarProps) {
   const [time, setTime] = useState(() => new Date());
   const [blinkState, setBlinkState] = useState(true);
+
+  // suppress unused warning
+  void lastSync;
 
   useEffect(() => {
     const tick = setInterval(() => setTime(new Date()), 1000);
@@ -197,6 +205,11 @@ export function TopBar({
               <span>✦</span>
               <span>AI</span>
             </button>
+          )}
+
+          {/* Notification Center */}
+          {events && onAcknowledgeEvent && (
+            <NotificationCenter events={events} onAcknowledge={onAcknowledgeEvent} />
           )}
           {/* Metrics */}
           <div className="hidden lg:flex items-center gap-4">

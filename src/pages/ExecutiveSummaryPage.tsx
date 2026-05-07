@@ -1,9 +1,32 @@
 // src/pages/ExecutiveSummaryPage.tsx
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback } from "react";
 import { useEntityStream } from "@/hooks/useEntityStream";
 import { computeThreatAssessment, severityToColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS, DOMAIN_ORDER } from "@/constants/domains";
 import { ThreatMeter } from "@/components/features/ThreatMeter";
+import { toast } from "sonner";
+
+function exportPDF(title: string, content: string) {
+  const html = `<!DOCTYPE html><html><head>
+    <title>${title}</title>
+    <style>
+      body { font-family: monospace; background: #020617; color: #e2e8f0; padding: 40px; }
+      h1 { color: #00d4ff; font-size: 20px; border-bottom: 1px solid #1e3a5f; padding-bottom: 10px; }
+      pre { font-size: 11px; line-height: 1.8; color: #94a3b8; white-space: pre-wrap; }
+      .classified { color: #ef4444; font-size: 10px; text-align: center; margin: 20px 0; letter-spacing: 0.2em; }
+      @media print { body { background: white; color: black; } h1 { color: #000; } .classified { color: #cc0000; } pre { color: #333; } }
+    </style>
+  </head><body>
+    <div class="classified">⚠ TOP SECRET // SENTINEL // NOFORN ⚠</div>
+    <h1>${title}</h1>
+    <pre>${content}</pre>
+    <div class="classified">END OF DOCUMENT // SENTINEL-X PLATFORM // ${new Date().toUTCString()}</div>
+  </body></html>`;
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, "_blank");
+  if (w) { w.onload = () => { w.print(); URL.revokeObjectURL(url); }; }
+}
 
 export function ExecutiveSummaryPage() {
   const { entities, events } = useEntityStream();
@@ -13,7 +36,6 @@ export function ExecutiveSummaryPage() {
   const dtg = `${time.getUTCDate().toString().padStart(2,"0")}${time.getUTCHours().toString().padStart(2,"0")}${time.getUTCMinutes().toString().padStart(2,"0")}Z ${["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"][time.getUTCMonth()]} ${time.getUTCFullYear()}`;
 
   const critEvents = events.filter((e) => e.severity === "CRITICAL" && !e.acknowledged);
-  const highEvents = events.filter((e) => e.severity === "HIGH" && !e.acknowledged);
 
   const topDomains = DOMAIN_ORDER
     .map((d) => ({
@@ -26,6 +48,44 @@ export function ExecutiveSummaryPage() {
       const o: Record<string, number> = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 };
       return (o[b.level] ?? 0) - (o[a.level] ?? 0);
     });
+
+  const handleExportPDF = useCallback(() => {
+    const content = [
+      `CLASSIFICATION : TOP SECRET // SENTINEL // NOFORN`,
+      `DTG            : ${dtg}`,
+      `REPORT TYPE    : EXECUTIVE INTELLIGENCE SUMMARY`,
+      "",
+      "═══ GLOBAL THREAT ASSESSMENT ═══",
+      `Global Threat Level  : ${assessment.globalThreatLevel}`,
+      `Threat Index         : ${assessment.threatIndex}/100`,
+      `Critical Entities    : ${assessment.criticalEntityCount}`,
+      `High Entities        : ${assessment.highEntityCount}`,
+      `Anomalies            : ${assessment.anomalyCount}`,
+      `Active Crisis Zones  : ${assessment.activeCrisisZones.join(", ") || "None"}`,
+      "",
+      "═══ ENTITY TRACKING ═══",
+      `Total Tracked        : ${entities.length}`,
+      `Unacknowledged Alerts: ${events.filter((e) => !e.acknowledged).length}`,
+      "",
+      "═══ DOMAIN THREAT POSTURE ═══",
+      ...topDomains.map((d) => `${d.cfg.label.padEnd(20)} : ${d.level.padEnd(10)} (${d.count} entities)`),
+      "",
+      "═══ CRITICAL INCIDENTS ═══",
+      ...(critEvents.length > 0
+        ? critEvents.slice(0, 5).map((e) => `[${e.domain.toUpperCase()}] ${e.title}: ${e.description}`)
+        : ["No unacknowledged critical incidents."]),
+      "",
+      "═══ RECOMMENDED ACTIONS ═══",
+      assessment.globalThreatLevel === "CRITICAL"
+        ? "IMMEDIATE: Escalate to DEFCON 3. Notify senior command. Activate crisis response."
+        : "ELEVATED: Continue monitoring. Increase ISR coverage on active AOs.",
+      `Verify ${assessment.anomalyCount} flagged anomalies.`,
+      `Review ${critEvents.length} outstanding CRITICAL events.`,
+      "NEXT UPDATE: T+60 MINUTES OR ON SIGNIFICANT CHANGE",
+    ].join("\n");
+    exportPDF(`SENTINEL-X EXECUTIVE SUMMARY // ${dtg}`, content);
+    toast.success("PDF report opened for printing");
+  }, [assessment, entities, events, dtg, topDomains, critEvents]);
 
   return (
     <div className="flex flex-col h-full bg-sx-bg overflow-y-auto">
@@ -49,7 +109,14 @@ export function ExecutiveSummaryPage() {
               CLASSIFICATION: TOP SECRET // SENTINEL // NOFORN
             </div>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleExportPDF}
+              className="px-3 py-1.5 rounded font-mono text-[9px] font-bold tracking-wider transition-all"
+              style={{ background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.25)", color: "#00d4ff" }}
+            >
+              ↓ PDF REPORT
+            </button>
             <ThreatMeter assessment={assessment} size={96} />
             <div>
               <div className="font-mono text-[9px] text-sx-text-muted mb-1">GLOBAL THREAT LEVEL</div>

@@ -23,6 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/geofences",  label: "Geofence Manager",    shortLabel: "GEO",   icon: "◯" },
   { path: "/graph",      label: "Knowledge Graph",     shortLabel: "GRAPH", icon: "◉" },
   { path: "/sigint",     label: "SIGINT Spectrum",      shortLabel: "SIGINT",icon: "📡" },
+  { path: "/orbital",   label: "3D Orbital Globe",     shortLabel: "ORBIT", icon: "🌍" },
   { path: "/analytics",  label: "Analytics",           shortLabel: "ANLYT", icon: "◱" },
   { path: "/exec",       label: "Executive Summary",   shortLabel: "EXEC",  icon: "★" },
   { path: "/workspaces", label: "Workspaces",          shortLabel: "WS",    icon: "⊟" },

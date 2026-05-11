@@ -415,7 +415,46 @@ function generateSigintEntities(count: number): SentinelEntity[] {
   });
 }
 
-// ─── Event stream generator ───────────────────────────────────────────────────
+// ─── Weather entities ────────────────────────────────────────────────────────
+
+const WEATHER_EVENTS = [
+  { name: "HURRICANE DELTA CAT-4", lat: 19.5, lon: -87.0, sev: "HIGH" as SeverityLevel, type: "STORM_HURRICANE" as const },
+  { name: "SUPER TYPHOON KETSANA", lat: 14.0, lon: 126.0, sev: "HIGH" as SeverityLevel, type: "STORM_TYPHOON" as const },
+  { name: "CYCLONE IDAI REMANANT", lat: -18.3, lon: 37.0, sev: "MEDIUM" as SeverityLevel, type: "STORM_HURRICANE" as const },
+  { name: "POLAR VORTEX INTRUSION", lat: 65.0, lon: -20.0, sev: "MEDIUM" as SeverityLevel, type: "STORM_HURRICANE" as const },
+  { name: "MEDICANE IANOS", lat: 35.0, lon: 22.0, sev: "MEDIUM" as SeverityLevel, type: "STORM_HURRICANE" as const },
+];
+
+function generateWeatherEntities(count: number): SentinelEntity[] {
+  return WEATHER_EVENTS.slice(0, count).map((ev) => ({
+    id: `MET-${randomId()}`,
+    type: ev.type,
+    domain: "weather" as const,
+    label: ev.name,
+    position: {
+      lat: clampLat(ev.lat + randomBetween(-1, 1)),
+      lon: wrapLon(ev.lon + randomBetween(-1, 1)),
+    },
+    heading: randomInt(0, 359),
+    speed: randomInt(10, 40),
+    severity: ev.sev,
+    classification: "UNCLASSIFIED" as const,
+    anomalyFlag: ev.sev === "HIGH",
+    confidence: randomBetween(0.88, 0.99),
+    source: "NOAA/ECMWF",
+    ts: isoOffset(randomInt(0, 7200)),
+    meta: {
+      category: ev.type === "STORM_HURRICANE" ? `CAT-${randomInt(2,5)}` : "SUPER TYPHOON",
+      windSpeed: `${randomInt(100, 280)} km/h`,
+      pressure: `${randomInt(880, 970)} hPa`,
+      movement: `${randomInt(5, 35)} km/h ${["N","NE","E","SE","S","SW","W","NW"][randomInt(0,7)]}`,
+      diameter: `${randomInt(300, 1200)} km`,
+      landfall: Math.random() > 0.5 ? `T+${randomInt(12, 72)}h POSSIBLE` : "OPEN OCEAN",
+    },
+  }));
+}
+
+
 
 const EVENT_TEMPLATES = [
   { title: "AIRCRAFT SQUAWK 7700 DETECTED", domain: "aviation", sev: "HIGH" as SeverityLevel },
@@ -483,6 +522,7 @@ export function generateWorldSnapshot(): WorldSnapshot {
     ...generateCyberEntities(5),
     ...generateNuclearEntities(5),
     ...generateSigintEntities(12),
+    ...generateWeatherEntities(5),
   ];
 
   const events = generateEvents(30);

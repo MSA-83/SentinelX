@@ -1,17 +1,20 @@
 // src/pages/Dashboard.tsx
-// Main operational dashboard — composes all panels, map, and stream hook
+// Main operational dashboard — full-featured map-centric view
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useOutletContext } from "react-router-dom";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
 import { useEntityStream } from "@/hooks/useEntityStream";
+import { useLiveFeeds } from "@/hooks/useLiveFeeds";
 import { computeThreatAssessment } from "@/lib/threatAssessor";
-import { TopBar } from "@/components/layout/TopBar";
+import { TopBar, type MapOverlayMode } from "@/components/layout/TopBar";
 import { LeftPanel } from "@/components/layout/LeftPanel";
 import { RightPanel } from "@/components/layout/RightPanel";
 import { MapView } from "@/components/features/MapView";
 import { StatusBar } from "@/components/features/StatusBar";
+import { CommandBar } from "@/components/features/CommandBar";
+import { AICopilot } from "@/components/features/AICopilot";
 
-// Default mission workspaces
 const DEFAULT_WORKSPACES: MissionWorkspace[] = [
   {
     id: "ws-global",
@@ -67,14 +70,19 @@ export function Dashboard() {
     toggleLayer,
   } = useEntityStream();
 
+  const liveFeeds = useLiveFeeds();
+
+  const outletCtx = useOutletContext<{ navCollapsed: boolean; toggleNav: () => void } | undefined>();
   const [selectedEntity,    setSelectedEntity]    = useState<SentinelEntity | null>(null);
   const [activeWorkspace,   setActiveWorkspace]   = useState<MissionWorkspace>(DEFAULT_WORKSPACES[0]);
   const [leftPanelVisible,  setLeftPanelVisible]  = useState(true);
   const [rightPanelVisible, setRightPanelVisible] = useState(true);
   const [showHotspots,      setShowHotspots]      = useState(true);
   const [showTrails,        setShowTrails]        = useState(true);
+  const [overlayMode,       setOverlayMode]       = useState<MapOverlayMode>("normal");
+  const [commandBarOpen,    setCommandBarOpen]    = useState(false);
+  const [copilotOpen,       setCopilotOpen]       = useState(false);
 
-  // Compute enabled domains from layer states
   const enabledDomains = useMemo<Set<DomainKey>>(() => {
     const enabled = new Set<DomainKey>();
     for (const [domain, state] of Object.entries(layerStates)) {
@@ -83,13 +91,19 @@ export function Dashboard() {
     return enabled;
   }, [layerStates]);
 
-  // Filter entities by enabled domains
+  // Merge mock entities with live OSINT entities (live data takes priority by ID)
+  const mergedEntities = useMemo(() => {
+    const liveById = new Map(liveFeeds.entities.map((e) => [e.id, e]));
+    // Keep mock entities that aren't overridden by live data
+    const mockFiltered = entities.filter((e) => !liveById.has(e.id));
+    return [...mockFiltered, ...liveFeeds.entities];
+  }, [entities, liveFeeds.entities]);
+
   const filteredEntities = useMemo(
-    () => entities.filter((e) => enabledDomains.has(e.domain)),
-    [entities, enabledDomains]
+    () => mergedEntities.filter((e) => enabledDomains.has(e.domain)),
+    [mergedEntities, enabledDomains]
   );
 
-  // Compute threat assessment from filtered entity set
   const threatAssessment = useMemo(
     () => computeThreatAssessment(filteredEntities),
     [filteredEntities]
@@ -104,26 +118,40 @@ export function Dashboard() {
     setSelectedEntity(null);
   }, []);
 
+  const handleCommandBarEntitySelect = useCallback((entity: SentinelEntity) => {
+    setSelectedEntity(entity);
+    setRightPanelVisible(true);
+    setCommandBarOpen(false);
+  }, []);
+
   const handleWorkspaceSelect = useCallback(
     (ws: MissionWorkspace) => {
       setActiveWorkspace(ws);
-      // Activate domains from workspace config
       for (const [domain, state] of Object.entries(layerStates)) {
         const shouldBeEnabled = ws.activeDomains.includes(domain as DomainKey);
-        if (state.enabled !== shouldBeEnabled) {
-          toggleLayer(domain as DomainKey);
-        }
+        if (state.enabled !== shouldBeEnabled) toggleLayer(domain as DomainKey);
       }
     },
     [layerStates, toggleLayer]
   );
 
-  return (
-    // h-screen + w-screen ensures the root fills exactly the viewport
-    // overflow-hidden prevents any scroll on the shell itself
-    <div className="flex flex-col w-screen h-screen overflow-hidden bg-sx-bg">
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setCommandBarOpen((v) => !v);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "i") {
+        e.preventDefault();
+        setCopilotOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
-      {/* ── Top classification + nav bar ────────────────────────── */}
+  return (
+    <div className="flex flex-col w-full h-full overflow-hidden bg-sx-bg">
       <TopBar
         threatAssessment={threatAssessment}
         isConnected={isConnected}
@@ -131,13 +159,17 @@ export function Dashboard() {
         messageRate={messageRate}
         totalEntityCount={totalEntityCount}
         lastSync={lastSync}
-        onToggleSidebar={() => setLeftPanelVisible((v) => !v)}
+        onToggleSidebar={() => { setLeftPanelVisible((v) => !v); outletCtx?.toggleNav?.(); }}
+        onOpenCommandBar={() => setCommandBarOpen(true)}
+        overlayMode={overlayMode}
+        onOverlayModeChange={setOverlayMode}
+        onOpenCopilot={() => setCopilotOpen((v) => !v)}
+        copilotOpen={copilotOpen}
+        events={events}
+        onAcknowledgeEvent={acknowledgeEvent}
       />
 
-      {/* ── Main content — flex-1 min-h-0 lets map fill remaining space ── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-
-        {/* Left domain/layer control panel */}
         <LeftPanel
           layerStates={layerStates}
           onToggleLayer={toggleLayer}
@@ -148,7 +180,6 @@ export function Dashboard() {
           visible={leftPanelVisible}
         />
 
-        {/* Tactical map — flex-1 min-w-0 so it shrinks when panels appear */}
         <div className="flex-1 min-w-0 relative">
           <MapView
             entities={filteredEntities}
@@ -157,21 +188,21 @@ export function Dashboard() {
             selectedEntityId={selectedEntity?.id ?? null}
             showHotspots={showHotspots}
             showTrails={showTrails}
+            overlayMode={overlayMode}
           />
         </div>
 
-        {/* Right alert/intel panel */}
         <RightPanel
           events={events}
           onAcknowledge={acknowledgeEvent}
           selectedEntity={selectedEntity}
           onClearSelection={handleClearSelection}
           threatAssessment={threatAssessment}
+          entities={filteredEntities}
           visible={rightPanelVisible}
         />
       </div>
 
-      {/* ── Bottom status / telemetry bar ────────────────────────── */}
       <StatusBar
         layerStates={layerStates}
         lastSync={lastSync}
@@ -180,7 +211,29 @@ export function Dashboard() {
         showTrails={showTrails}
         onToggleHotspots={() => setShowHotspots((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
+        liveFeedStatuses={liveFeeds.feedStatuses}
+        liveFeedTotal={liveFeeds.totalLiveEntities}
+        liveFeedLoading={liveFeeds.isLoading}
+        liveFeedLastFetch={liveFeeds.lastFetch}
+        onRefreshLiveFeeds={liveFeeds.refreshNow}
       />
+
+      <CommandBar
+        open={commandBarOpen}
+        onClose={() => setCommandBarOpen(false)}
+        entities={filteredEntities}
+        onEntitySelect={handleCommandBarEntitySelect}
+        onDomainToggle={toggleLayer}
+        enabledDomains={enabledDomains}
+      />
+
+      {copilotOpen && (
+        <AICopilot
+          entities={filteredEntities}
+          threatAssessment={threatAssessment}
+          onClose={() => setCopilotOpen(false)}
+        />
+      )}
     </div>
   );
 }

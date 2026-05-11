@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { StreamEvent, SentinelEntity, ThreatAssessment } from "@/types/entities";
 import { severityToColor, severityToBgColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS } from "@/constants/domains";
+import { SitrepPanel } from "@/components/features/SitrepPanel";
 
 interface RightPanelProps {
   events: StreamEvent[];
@@ -10,6 +11,7 @@ interface RightPanelProps {
   selectedEntity: SentinelEntity | null;
   onClearSelection: () => void;
   threatAssessment: ThreatAssessment;
+  entities: SentinelEntity[];
   visible: boolean;
 }
 
@@ -19,9 +21,10 @@ export function RightPanel({
   selectedEntity,
   onClearSelection,
   threatAssessment,
+  entities,
   visible,
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<"events" | "entity" | "intel">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "entity" | "intel" | "sitrep">("events");
 
   // Auto-switch to entity tab when entity selected
   const currentTab = selectedEntity ? "entity" : activeTab;
@@ -34,8 +37,8 @@ export function RightPanel({
       style={{ boxShadow: "-2px 0 16px rgba(0,0,0,0.5)" }}
     >
       {/* Panel header tabs */}
-      <div className="border-b border-sx-border px-3 py-2 flex items-center gap-1">
-        {(["events", "entity", "intel"] as const).map((tab) => {
+      <div className="border-b border-sx-border px-2 py-2 flex items-center gap-0.5">
+        {(["events", "entity", "intel", "sitrep"] as const).map((tab) => {
           const unreadCount = tab === "events" ? events.filter((e) => !e.acknowledged).length : 0;
           return (
             <button
@@ -44,13 +47,13 @@ export function RightPanel({
                 setActiveTab(tab);
                 if (tab !== "entity") onClearSelection();
               }}
-              className={`flex-1 py-1.5 rounded text-[10px] font-mono font-bold tracking-wider uppercase transition-all relative ${
+              className={`flex-1 py-1.5 rounded text-[9px] font-mono font-bold tracking-wider uppercase transition-all relative ${
                 currentTab === tab
                   ? "bg-sx-cyan/20 text-sx-cyan border border-sx-cyan/30"
                   : "text-sx-text-muted hover:text-sx-text border border-transparent"
               }`}
             >
-              {tab === "events" ? "ALERTS" : tab === "entity" ? "ENTITY" : "INTEL"}
+              {tab === "events" ? "ALERTS" : tab === "entity" ? "ENTITY" : tab === "intel" ? "INTEL" : "SITREP"}
               {unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-sx-red text-white text-[8px] flex items-center justify-center font-bold">
                   {unreadCount > 9 ? "9+" : unreadCount}
@@ -71,6 +74,9 @@ export function RightPanel({
         )}
         {currentTab === "intel" && (
           <IntelTab threatAssessment={threatAssessment} />
+        )}
+        {currentTab === "sitrep" && (
+          <SitrepPanel entities={entities} events={events} threatAssessment={threatAssessment} />
         )}
       </div>
     </div>

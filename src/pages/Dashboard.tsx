@@ -5,6 +5,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useOutletContext } from "react-router-dom";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
 import { useEntityStream } from "@/hooks/useEntityStream";
+import { useLiveFeeds } from "@/hooks/useLiveFeeds";
 import { computeThreatAssessment } from "@/lib/threatAssessor";
 import { TopBar, type MapOverlayMode } from "@/components/layout/TopBar";
 import { LeftPanel } from "@/components/layout/LeftPanel";
@@ -69,6 +70,8 @@ export function Dashboard() {
     toggleLayer,
   } = useEntityStream();
 
+  const liveFeeds = useLiveFeeds();
+
   const outletCtx = useOutletContext<{ navCollapsed: boolean; toggleNav: () => void } | undefined>();
   const [selectedEntity,    setSelectedEntity]    = useState<SentinelEntity | null>(null);
   const [activeWorkspace,   setActiveWorkspace]   = useState<MissionWorkspace>(DEFAULT_WORKSPACES[0]);
@@ -88,9 +91,17 @@ export function Dashboard() {
     return enabled;
   }, [layerStates]);
 
+  // Merge mock entities with live OSINT entities (live data takes priority by ID)
+  const mergedEntities = useMemo(() => {
+    const liveById = new Map(liveFeeds.entities.map((e) => [e.id, e]));
+    // Keep mock entities that aren't overridden by live data
+    const mockFiltered = entities.filter((e) => !liveById.has(e.id));
+    return [...mockFiltered, ...liveFeeds.entities];
+  }, [entities, liveFeeds.entities]);
+
   const filteredEntities = useMemo(
-    () => entities.filter((e) => enabledDomains.has(e.domain)),
-    [entities, enabledDomains]
+    () => mergedEntities.filter((e) => enabledDomains.has(e.domain)),
+    [mergedEntities, enabledDomains]
   );
 
   const threatAssessment = useMemo(
@@ -200,6 +211,11 @@ export function Dashboard() {
         showTrails={showTrails}
         onToggleHotspots={() => setShowHotspots((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
+        liveFeedStatuses={liveFeeds.feedStatuses}
+        liveFeedTotal={liveFeeds.totalLiveEntities}
+        liveFeedLoading={liveFeeds.isLoading}
+        liveFeedLastFetch={liveFeeds.lastFetch}
+        onRefreshLiveFeeds={liveFeeds.refreshNow}
       />
 
       <CommandBar

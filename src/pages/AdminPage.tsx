@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { useLiveFeeds } from "@/hooks/useLiveFeeds";
 
 interface AuditEntry {
   id: string;
@@ -50,11 +51,12 @@ const STATUS_COLOR: Record<string, string> = {
   OFFLINE:  "#ef4444",
 };
 
-const tabs = ["OVERVIEW", "SOURCE HEALTH", "AUDIT LOG", "SYSTEM"] as const;
+const tabs = ["OVERVIEW", "LIVE DATA", "SOURCE HEALTH", "AUDIT LOG", "SYSTEM"] as const;
 type AdminTab = typeof tabs[number];
 
 export function AdminPage() {
   const { user } = useAuth();
+  const liveFeeds = useLiveFeeds();
   const [activeTab, setActiveTab] = useState<AdminTab>("OVERVIEW");
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
@@ -300,6 +302,172 @@ export function AdminPage() {
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── LIVE DATA FEEDS ── */}
+        {activeTab === "LIVE DATA" && (
+          <div className="space-y-4">
+            {/* Summary header */}
+            <div className="rounded border border-sx-border-dim bg-sx-panel p-4 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-5">
+                {[
+                  { label: "LIVE ENTITIES",   value: liveFeeds.totalLiveEntities, color: "#10b981" },
+                  { label: "ACTIVE FEEDS",    value: liveFeeds.feedStatuses.filter((s) => s.isLive).length, color: "#00d4ff" },
+                  { label: "FEED ERRORS",     value: liveFeeds.errorCount, color: liveFeeds.errorCount > 0 ? "#ef4444" : "#334155" },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="text-center">
+                    <div className="font-mono font-bold text-2xl" style={{ color }}>{value}</div>
+                    <div className="font-mono text-[8px] text-sx-text-muted">{label}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center gap-3">
+                {liveFeeds.lastFetch && (
+                  <span className="font-mono text-[9px] text-sx-text-muted">
+                    LAST FETCH: {new Date(liveFeeds.lastFetch).toUTCString().split(" ")[4]}Z
+                  </span>
+                )}
+                <button
+                  onClick={liveFeeds.refreshNow}
+                  disabled={liveFeeds.isLoading}
+                  className="px-3 py-1.5 rounded font-mono text-[9px] uppercase tracking-wider transition-all"
+                  style={{
+                    background: "rgba(0,212,255,0.08)",
+                    border: "1px solid rgba(0,212,255,0.25)",
+                    color: liveFeeds.isLoading ? "#334155" : "#00d4ff",
+                    cursor: liveFeeds.isLoading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {liveFeeds.isLoading ? "FETCHING…" : "↻ REFRESH NOW"}
+                </button>
+              </div>
+            </div>
+
+            {/* Feed statuses */}
+            <div className="rounded border border-sx-border-dim bg-sx-panel overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-sx-border-dim bg-sx-surface">
+                <span className="font-mono text-[10px] text-sx-text-muted tracking-widest">LIVE OSINT FEED STATUS</span>
+              </div>
+              {liveFeeds.feedStatuses.length === 0 ? (
+                <div className="p-8 text-center">
+                  {liveFeeds.isLoading ? (
+                    <div className="space-y-2">
+                      <div className="flex justify-center gap-1">
+                        {Array.from({ length: 6 }, (_, i) => (
+                          <div key={i} className="w-1 rounded-full bg-sx-cyan/30" style={{ height: 16, animation: `pulse ${0.6 + i * 0.1}s ease-in-out infinite alternate` }} />
+                        ))}
+                      </div>
+                      <div className="font-mono text-[10px] text-sx-text-muted">FETCHING LIVE FEEDS…</div>
+                    </div>
+                  ) : (
+                    <div className="font-mono text-[10px] text-sx-text-muted">NO FEED DATA — CLICK REFRESH TO FETCH</div>
+                  )}
+                </div>
+              ) : (
+                <div className="divide-y divide-sx-border-dim">
+                  {liveFeeds.feedStatuses.map((status) => {
+                    const domainLabels: Record<string, string> = {
+                      seismic: "USGS Earthquake", weather: "OpenWeatherMap",
+                      orbital: "N2YO Satellite", conflict: "NASA FIRMS + NewsAPI",
+                      cyber: "Shodan ICS", aviation: "AVWX METAR", maritime: "Global Fishing Watch",
+                    };
+                    const domainIcons: Record<string, string> = {
+                      seismic: "🌍", weather: "🌩️", orbital: "🛰️",
+                      conflict: "⚠️", cyber: "💻", aviation: "✈️", maritime: "🚢",
+                    };
+                    const isLive = status.isLive;
+                    return (
+                      <div key={status.domain} className="px-4 py-3 flex items-center gap-4">
+                        <span className="text-lg flex-shrink-0">{domainIcons[status.domain] ?? "●"}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="font-mono text-[10px] font-bold text-sx-text">
+                              {domainLabels[status.domain] ?? status.domain.toUpperCase()}
+                            </span>
+                            <div
+                              className="w-1.5 h-1.5 rounded-full"
+                              style={{
+                                background: isLive ? "#10b981" : status.error ? "#ef4444" : "#334155",
+                                boxShadow: isLive ? "0 0 4px #10b981" : "none",
+                                animation: isLive ? "pulse 2s infinite" : "none",
+                              }}
+                            />
+                            <span
+                              className="font-mono text-[9px]"
+                              style={{ color: isLive ? "#10b981" : status.error ? "#ef4444" : "#475569" }}
+                            >
+                              {isLive ? "LIVE" : status.error ? "ERROR" : "NO DATA"}
+                            </span>
+                          </div>
+                          {status.error && (
+                            <div className="font-mono text-[8px] text-sx-red truncate">{status.error}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-4 flex-shrink-0">
+                          <div className="text-center">
+                            <div className="font-mono font-bold text-sx-cyan" style={{ fontSize: 14 }}>
+                              {status.entityCount}
+                            </div>
+                            <div className="font-mono text-[7px] text-sx-text-muted">ENTITIES</div>
+                          </div>
+                          <div className="text-center">
+                            <div
+                              className="font-mono font-bold"
+                              style={{
+                                fontSize: 14,
+                                color: status.latencyMs > 500 ? "#f59e0b" : "#94a3b8",
+                              }}
+                            >
+                              {status.latencyMs > 0 ? `${status.latencyMs}ms` : "—"}
+                            </div>
+                            <div className="font-mono text-[7px] text-sx-text-muted">LATENCY</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Live entities table */}
+            {liveFeeds.entities.length > 0 && (
+              <div className="rounded border border-sx-border-dim bg-sx-panel overflow-hidden">
+                <div className="px-4 py-2.5 border-b border-sx-border-dim bg-sx-surface flex items-center justify-between">
+                  <span className="font-mono text-[10px] text-sx-text-muted tracking-widest">
+                    LIVE ENTITY FEED ({liveFeeds.entities.length})
+                  </span>
+                  <span className="font-mono text-[8px] text-sx-green">REAL OSINT DATA</span>
+                </div>
+                <div
+                  className="grid px-4 py-1.5 border-b border-sx-border-dim font-mono text-[8px] text-sx-text-muted tracking-widest"
+                  style={{ gridTemplateColumns: "2fr 1fr 0.7fr 1.5fr 1fr" }}
+                >
+                  {["ENTITY LABEL", "DOMAIN", "SEV", "SOURCE", "TIMESTAMP"].map((h) => <span key={h}>{h}</span>)}
+                </div>
+                <div className="max-h-64 overflow-y-auto divide-y divide-sx-border-dim">
+                  {liveFeeds.entities.slice(0, 50).map((e) => {
+                    const sevColor = e.severity === "CRITICAL" ? "#ef4444" : e.severity === "HIGH" ? "#f59e0b" : e.severity === "MEDIUM" ? "#fde047" : "#94a3b8";
+                    return (
+                      <div
+                        key={e.id}
+                        className="grid px-4 py-2 hover:bg-sx-surface/30 transition-all"
+                        style={{ gridTemplateColumns: "2fr 1fr 0.7fr 1.5fr 1fr" }}
+                      >
+                        <span className="font-mono text-[9px] text-sx-text truncate" title={e.label}>{e.label}</span>
+                        <span className="font-mono text-[9px] text-sx-cyan uppercase">{e.domain}</span>
+                        <span className="font-mono text-[9px] font-bold" style={{ color: sevColor }}>{e.severity}</span>
+                        <span className="font-mono text-[8px] text-sx-text-muted truncate" title={e.source}>{e.source}</span>
+                        <span className="font-mono text-[8px] text-sx-text-muted">
+                          {new Date(e.ts).toUTCString().split(" ")[4]}Z
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

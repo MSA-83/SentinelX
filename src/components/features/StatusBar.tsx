@@ -4,6 +4,8 @@
 import { useState, useEffect } from "react";
 import type { DomainKey, LayerState } from "@/types/entities";
 import { DOMAIN_CONFIGS } from "@/constants/domains";
+import { LiveFeedBadge } from "@/components/features/LiveFeedBadge";
+import type { LiveFeedStatus } from "@/hooks/useLiveFeeds";
 
 interface StatusBarProps {
   layerStates: Record<DomainKey, LayerState>;
@@ -13,6 +15,12 @@ interface StatusBarProps {
   showTrails: boolean;
   onToggleHotspots: () => void;
   onToggleTrails: () => void;
+  // Live feed props (optional — only present on Dashboard)
+  liveFeedStatuses?: LiveFeedStatus[];
+  liveFeedTotal?: number;
+  liveFeedLoading?: boolean;
+  liveFeedLastFetch?: string | null;
+  onRefreshLiveFeeds?: () => void;
 }
 
 export function StatusBar({
@@ -23,6 +31,11 @@ export function StatusBar({
   showTrails,
   onToggleHotspots,
   onToggleTrails,
+  liveFeedStatuses,
+  liveFeedTotal = 0,
+  liveFeedLoading = false,
+  liveFeedLastFetch,
+  onRefreshLiveFeeds,
 }: StatusBarProps) {
   const [frameCount, setFrameCount] = useState(0);
 
@@ -71,10 +84,19 @@ export function StatusBar({
         </div>
       </div>
 
-      {/* Center: Toggles */}
+      {/* Center: Toggles + Live Feed Badge */}
       <div className="flex items-center gap-2 flex-shrink-0">
         <ToggleButton label="HOTSPOTS" active={showHotspots} onClick={onToggleHotspots} />
         <ToggleButton label="TRAILS" active={showTrails} onClick={onToggleTrails} />
+        {liveFeedStatuses !== undefined && (
+          <LiveFeedBadge
+            feedStatuses={liveFeedStatuses}
+            totalLiveEntities={liveFeedTotal}
+            isLoading={liveFeedLoading}
+            lastFetch={liveFeedLastFetch ?? null}
+            onRefresh={onRefreshLiveFeeds}
+          />
+        )}
       </div>
 
       {/* Right: System telemetry */}

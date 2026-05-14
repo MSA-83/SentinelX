@@ -1,13 +1,14 @@
 // src/components/features/MapView.tsx
 // Tactical Leaflet map with custom SVG entity markers, heading vectors,
-// trail rendering, threat zone overlays, and anomaly pulse rings.
-// Leaflet is dynamically imported (npm) to avoid CDN/SRI race conditions.
+// trail rendering, threat zone overlays, anomaly pulse rings,
+// AIS vessel layer, and Planet Labs satellite imagery overlay.
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Map as LeafletMap, TileLayer, LayerGroup, Marker, Polyline } from "leaflet";
 import type { SentinelEntity, DomainKey } from "@/types/entities";
 import { DOMAIN_CONFIGS, HOTSPOT_ZONES } from "@/constants/domains";
 import { severityToColor } from "@/lib/threatAssessor";
+import { supabase } from "@/lib/supabase";
 
 export type MapOverlayMode = "normal" | "flir" | "nightvision";
 
@@ -19,16 +20,22 @@ interface MapViewProps {
   showHotspots: boolean;
   showTrails: boolean;
   overlayMode?: MapOverlayMode;
+  // AIS layer props
+  aisEntities?: SentinelEntity[];
+  aisConnected?: boolean;
+  aisMessageCount?: number;
 }
 
-type MapMode = "dark" | "satellite";
+type MapMode = "dark" | "satellite" | "planet";
 
 const MAP_TILES = {
   dark:      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
   satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  // Planet tile URL is dynamically set after fetching token
+  planet:    "",
 };
 
-// SVG path shapes per domain — scaled to ±12 unit coordinate space
+// SVG path shapes per domain
 const DOMAIN_SHAPES: Record<string, string> = {
   aviation: "M 0,-11 L 10,4 L 0,1 L -10,4 Z",
   maritime: "M 0,-10 L 7,8 L 0,5 L -7,8 Z",
@@ -59,7 +66,6 @@ function buildEntityIcon(
   const scale  = (R / 12).toFixed(3);
   const filterId = `gf${entity.id.slice(-5)}`;
 
-  // Heading vector for moving entities
   const showVector = entity.heading !== undefined &&
     (entity.domain === "aviation" || entity.domain === "maritime");
   let vectorSvg = "";
@@ -71,7 +77,6 @@ function buildEntityIcon(
       stroke="${color}" stroke-width="1.5" stroke-linecap="round" opacity="0.75"/>`;
   }
 
-  // Animated pulse rings for anomalies
   const pulseRings = entity.anomalyFlag ? `
     <circle cx="${cx}" cy="${cy}" r="${R + 4}" fill="none" stroke="${color}" stroke-width="1" opacity="0">
       <animate attributeName="r"       from="${R + 2}" to="${R + 18}" dur="2.2s" repeatCount="indefinite"/>
@@ -82,7 +87,6 @@ function buildEntityIcon(
       <animate attributeName="opacity" from="0.3"      to="0"         dur="2.2s" begin="0.8s" repeatCount="indefinite"/>
     </circle>` : "";
 
-  // Selection spinner ring
   const selRing = isSelected ? `
     <circle cx="${cx}" cy="${cy}" r="${R + 7}" fill="none" stroke="#00d4ff"
       stroke-width="1.5" stroke-dasharray="4 3" opacity="0.9">
@@ -117,6 +121,43 @@ function buildEntityIcon(
   });
 }
 
+// ─── AIS Vessel icon (distinct triangle shape, cyan/blue themed) ───────────────
+
+function buildAISIcon(
+  L: typeof import("leaflet"),
+  entity: SentinelEntity,
+  isSelected: boolean
+): ReturnType<typeof L.divIcon> {
+  const isMilitary = entity.type === "VESSEL_WARSHIP";
+  const isTanker   = entity.type === "VESSEL_TANKER";
+  const color = isMilitary ? "#ef4444" : isTanker ? "#f59e0b" : "#22d3ee";
+  const SIZE  = 36;
+  const cx    = SIZE / 2;
+  const cy    = SIZE / 2;
+  const heading = entity.heading ?? 0;
+
+  const svg = `<svg width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}"
+    xmlns="http://www.w3.org/2000/svg" style="overflow:visible;display:block">
+    <g transform="translate(${cx},${cy}) rotate(${heading})">
+      <polygon points="0,-10 6,7 0,4 -6,7"
+        fill="${color}30" stroke="${color}" stroke-width="${isSelected ? 2 : 1.2}"/>
+      ${isSelected ? `<circle r="14" fill="none" stroke="${color}" stroke-width="1"
+        stroke-dasharray="3 3" opacity="0.6">
+        <animateTransform attributeName="transform" type="rotate"
+          from="0" to="360" dur="8s" repeatCount="indefinite"/>
+      </circle>` : ""}
+    </g>
+  </svg>`;
+
+  return L.divIcon({
+    className:   "ais-marker",
+    html:        svg,
+    iconSize:    [SIZE, SIZE],
+    iconAnchor:  [cx, cy],
+    popupAnchor: [0, -14],
+  });
+}
+
 // ─── Popup HTML builder ────────────────────────────────────────────────────────
 
 function buildPopupHtml(entity: SentinelEntity): string {
@@ -126,10 +167,10 @@ function buildPopupHtml(entity: SentinelEntity): string {
   const lon   = `${Math.abs(entity.position.lon).toFixed(4)}°${entity.position.lon >= 0 ? "E" : "W"}`;
 
   const rows: [string, string, string?][] = [
-    ["ID",         entity.id,                          "#94a3b8"],
+    ["ID",         entity.id.slice(0, 20),             "#94a3b8"],
     ["TYPE",       entity.type.replace(/_/g, " "),     "#94a3b8"],
     ["SEVERITY",   entity.severity,                    color],
-    ["SOURCE",     entity.source,                      "#94a3b8"],
+    ["SOURCE",     entity.source.slice(0, 24),         "#94a3b8"],
     ["POS",        `${lat} ${lon}`,                    "#00d4ff"],
     ["CONFIDENCE", `${(entity.confidence * 100).toFixed(0)}%`, "#94a3b8"],
   ];
@@ -137,6 +178,11 @@ function buildPopupHtml(entity: SentinelEntity): string {
     rows.push(["HDG / SPD", `${entity.heading.toFixed(0)}° / ${entity.speed ?? "—"} kt`, "#94a3b8"]);
   if (entity.altitude !== undefined)
     rows.push(["ALT", `${entity.altitude.toLocaleString()} ft`, "#94a3b8"]);
+
+  // AIS-specific fields
+  if (entity.meta?.mmsi) rows.push(["MMSI", String(entity.meta.mmsi), "#22d3ee"]);
+  if (entity.meta?.destination) rows.push(["DEST", String(entity.meta.destination).slice(0, 20), "#94a3b8"]);
+  if (entity.meta?.navStatus) rows.push(["STATUS", String(entity.meta.navStatus), "#94a3b8"]);
 
   const rowsHtml = rows.map(([k, v, c]) =>
     `<span style="color:#475569;font-size:9px">${k}</span>
@@ -146,8 +192,11 @@ function buildPopupHtml(entity: SentinelEntity): string {
   const anomalyBanner = entity.anomalyFlag
     ? `<div style="color:#f59e0b;font-size:9px;margin-top:5px;border-top:1px solid rgba(245,158,11,0.2);padding-top:4px">
         ⚠ ANOMALY FLAG — ELEVATED MONITORING PRIORITY
-       </div>`
-    : "";
+       </div>` : "";
+
+  const isLive = entity.meta?.isLive;
+  const liveBadge = isLive
+    ? `<div style="color:#22d3ee;font-size:8px;margin-top:4px">● AIS LIVE STREAM</div>` : "";
 
   return `
     <div style="font-family:'Share Tech Mono',monospace;min-width:210px">
@@ -160,6 +209,7 @@ function buildPopupHtml(entity: SentinelEntity): string {
         ${rowsHtml}
       </div>
       ${anomalyBanner}
+      ${liveBadge}
       <div style="margin-top:6px;font-size:8px;color:#1e3a5f;letter-spacing:0.08em">
         CLICK ENTITY TO OPEN FULL INTELLIGENCE RECORD
       </div>
@@ -168,7 +218,7 @@ function buildPopupHtml(entity: SentinelEntity): string {
 
 // ─── Mini radar HUD widget ─────────────────────────────────────────────────────
 
-function MiniRadar({ entityCount }: { entityCount: number }) {
+function MiniRadar({ entityCount, aisCount }: { entityCount: number; aisCount: number }) {
   const [angle, setAngle] = useState(0);
   useEffect(() => {
     let raf: number;
@@ -181,25 +231,18 @@ function MiniRadar({ entityCount }: { entityCount: number }) {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const r = 38;
+  const r  = 38;
   const cx = 50;
   const cy = 50;
 
   return (
-    <div
-      className="absolute z-[402] pointer-events-none select-none"
-      style={{ bottom: 36, right: 64 }}
-    >
+    <div className="absolute z-[402] pointer-events-none select-none" style={{ bottom: 36, right: 64 }}>
       <svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-        {/* Concentric rings */}
         {[r * 0.35, r * 0.65, r].map((rr, i) => (
-          <circle key={i} cx={cx} cy={cy} r={rr} fill="none"
-            stroke="rgba(0,212,255,0.18)" strokeWidth="0.75" />
+          <circle key={i} cx={cx} cy={cy} r={rr} fill="none" stroke="rgba(0,212,255,0.18)" strokeWidth="0.75" />
         ))}
-        {/* Cross-hairs */}
         <line x1={cx - r} y1={cy} x2={cx + r} y2={cy} stroke="rgba(0,212,255,0.12)" strokeWidth="0.5"/>
         <line x1={cx} y1={cy - r} x2={cx} y2={cy + r} stroke="rgba(0,212,255,0.12)" strokeWidth="0.5"/>
-        {/* Sweep gradient */}
         <defs>
           <radialGradient id="sweepGrad" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#00d4ff" stopOpacity="0.35"/>
@@ -208,28 +251,26 @@ function MiniRadar({ entityCount }: { entityCount: number }) {
         </defs>
         <path
           d={`M ${cx} ${cy} L ${(cx + r * Math.cos(((angle - 90) * Math.PI) / 180)).toFixed(2)} ${(cy + r * Math.sin(((angle - 90) * Math.PI) / 180)).toFixed(2)} A ${r} ${r} 0 0 1 ${(cx + r * Math.cos(((angle - 90 - 55) * Math.PI) / 180)).toFixed(2)} ${(cy + r * Math.sin(((angle - 90 - 55) * Math.PI) / 180)).toFixed(2)} Z`}
-          fill="url(#sweepGrad)"
-          opacity="0.6"
+          fill="url(#sweepGrad)" opacity="0.6"
         />
-        {/* Sweep line */}
         <line
           x1={cx} y1={cy}
           x2={(cx + r * Math.cos(((angle - 90) * Math.PI) / 180)).toFixed(2)}
           y2={(cy + r * Math.sin(((angle - 90) * Math.PI) / 180)).toFixed(2)}
           stroke="#00d4ff" strokeWidth="1" opacity="0.8"
         />
-        {/* Entity count */}
-        <text x={cx} y={cy + 2} textAnchor="middle" fill="#00d4ff"
-          fontSize="9" fontFamily="'Share Tech Mono',monospace" fontWeight="bold">
+        <text x={cx} y={cy + 2} textAnchor="middle" fill="#00d4ff" fontSize="9" fontFamily="'Share Tech Mono',monospace" fontWeight="bold">
           {entityCount}
         </text>
-        <text x={cx} y={cy + 12} textAnchor="middle" fill="rgba(0,212,255,0.5)"
-          fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
+        <text x={cx} y={cy + 12} textAnchor="middle" fill="rgba(0,212,255,0.5)" fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
           TRK
         </text>
-        {/* Outer label */}
-        <text x={cx} y={cy - r - 4} textAnchor="middle" fill="rgba(0,212,255,0.4)"
-          fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
+        {aisCount > 0 && (
+          <text x={cx} y={cy + 22} textAnchor="middle" fill="rgba(34,211,238,0.7)" fontSize="5.5" fontFamily="'Share Tech Mono',monospace">
+            AIS:{aisCount}
+          </text>
+        )}
+        <text x={cx} y={cy - r - 4} textAnchor="middle" fill="rgba(0,212,255,0.4)" fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
           RADAR
         </text>
       </svg>
@@ -239,7 +280,6 @@ function MiniRadar({ entityCount }: { entityCount: number }) {
 
 // ─── Main component ────────────────────────────────────────────────────────────
 
-// CSS filter presets for overlay modes
 const OVERLAY_FILTERS: Record<MapOverlayMode, string> = {
   normal:      "none",
   flir:        "sepia(1) saturate(3) hue-rotate(330deg) brightness(0.8) contrast(1.4)",
@@ -260,32 +300,43 @@ export function MapView({
   showHotspots,
   showTrails,
   overlayMode = "normal",
+  aisEntities = [],
+  aisConnected = false,
+  aisMessageCount = 0,
 }: MapViewProps) {
-  const containerRef  = useRef<HTMLDivElement>(null);
-  const mapRef        = useRef<LeafletMap | null>(null);
-  const tileRef       = useRef<TileLayer | null>(null);
-  const hotspotRef    = useRef<LayerGroup | null>(null);
-  const clusterRef    = useRef<LayerGroup | null>(null);
-  const markersRef    = useRef<Map<string, Marker>>(new Map());
-  const trailsRef     = useRef<Map<string, Polyline>>(new Map());
-  const LRef          = useRef<typeof import("leaflet") | null>(null);
-  const clusterModeRef = useRef(true);
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const mapRef          = useRef<LeafletMap | null>(null);
+  const tileRef         = useRef<TileLayer | null>(null);
+  const planetTileRef   = useRef<TileLayer | null>(null);
+  const hotspotRef      = useRef<LayerGroup | null>(null);
+  const clusterRef      = useRef<LayerGroup | null>(null);
+  const aisLayerRef     = useRef<LayerGroup | null>(null);
+  const markersRef      = useRef<Map<string, Marker>>(new Map());
+  const aisMarkersRef   = useRef<Map<string, Marker>>(new Map());
+  const trailsRef       = useRef<Map<string, Polyline>>(new Map());
+  const LRef            = useRef<typeof import("leaflet") | null>(null);
+  const clusterModeRef  = useRef(true);
+  const planetTokenRef  = useRef<string | null>(null);
 
-  const [mapMode,      setMapMode]      = useState<MapMode>("dark");
-  const [leafletReady, setLeafletReady] = useState(false);
-  const [entityCount,  setEntityCount]  = useState(0);
-  const [mapZoom,      setMapZoom]      = useState(3);
-  const [clusterMode,  setClusterMode]  = useState(true);
-  const [cursorPos,    setCursorPos]    = useState<{ lat: number; lon: number } | null>(null);
+  const [mapMode,        setMapMode]        = useState<MapMode>("dark");
+  const [leafletReady,   setLeafletReady]   = useState(false);
+  const [entityCount,    setEntityCount]    = useState(0);
+  const [mapZoom,        setMapZoom]        = useState(3);
+  const [clusterMode,    setClusterMode]    = useState(true);
+  const [cursorPos,      setCursorPos]      = useState<{ lat: number; lon: number } | null>(null);
+  const [showAISLayer,   setShowAISLayer]   = useState(true);
+  const [planetLoading,  setPlanetLoading]  = useState(false);
+  const [planetActive,   setPlanetActive]   = useState(false);
+  const [planetError,    setPlanetError]    = useState<string | null>(null);
+  const [aisVesselCount, setAisVesselCount] = useState(0);
 
-  // Overlay mode label
   const overlayLabel: Record<MapOverlayMode, string> = {
     normal: "",
     flir: "FLIR // THERMAL",
     nightvision: "NV // GEN-III",
   };
 
-  // Dynamic import of Leaflet (guarantees CSS + JS load correctly via bundler)
+  // Dynamic import of Leaflet
   useEffect(() => {
     import("leaflet").then((L) => {
       delete (L.Icon.Default.prototype as Record<string, unknown>)._getIconUrl;
@@ -299,42 +350,36 @@ export function MapView({
     });
   }, []);
 
-  // Initialize map once Leaflet is available
+  // Initialize map
   useEffect(() => {
     const L = LRef.current;
     if (!leafletReady || !L || !containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center:           [20, 15],
-      zoom:             3,
-      minZoom:          2,
-      maxZoom:          16,
-      zoomControl:      false,
-      attributionControl: true,
-      preferCanvas:     true,
+      center: [20, 15], zoom: 3, minZoom: 2, maxZoom: 16,
+      zoomControl: false, attributionControl: true, preferCanvas: true,
     });
 
     L.control.zoom({ position: "bottomright" }).addTo(map);
 
     tileRef.current = L.tileLayer(MAP_TILES.dark, {
       attribution: "&copy; <a href='https://carto.com/'>CARTO</a>",
-      maxZoom:     18,
-      subdomains:  "abcd",
+      maxZoom: 18, subdomains: "abcd",
     }).addTo(map);
 
     hotspotRef.current = L.layerGroup().addTo(map);
 
-    // Marker cluster group (uses plain LayerGroup as fallback)
+    // AIS vessel layer (separate from clustered entities)
+    aisLayerRef.current = L.layerGroup().addTo(map);
+
     const makeClusterGroup = () => {
       const MCG = (L as any).markerClusterGroup;
       if (MCG) {
         return MCG({
-          chunkedLoading: true,
-          maxClusterRadius: 55,
-          spiderfyOnMaxZoom: true,
-          showCoverageOnHover: false,
+          chunkedLoading: true, maxClusterRadius: 55,
+          spiderfyOnMaxZoom: true, showCoverageOnHover: false,
           iconCreateFunction: (cluster: any) => {
-            const n = cluster.getChildCount();
+            const n   = cluster.getChildCount();
             const col = n >= 20 ? "#ef4444" : n >= 10 ? "#f59e0b" : "#00d4ff";
             const sz  = n >= 20 ? 44 : n >= 10 ? 38 : 32;
             const rgb = n >= 20 ? "239,68,68" : n >= 10 ? "245,158,11" : "0,212,255";
@@ -351,9 +396,9 @@ export function MapView({
     clusterRef.current = makeClusterGroup();
     clusterRef.current.addTo(map);
 
-    map.on("zoomend",      () => setMapZoom(map.getZoom()));
-    map.on("mousemove",    (e) => setCursorPos({ lat: e.latlng.lat, lon: e.latlng.lng }));
-    map.on("mouseout",     () => setCursorPos(null));
+    map.on("zoomend",   () => setMapZoom(map.getZoom()));
+    map.on("mousemove", (e) => setCursorPos({ lat: e.latlng.lat, lon: e.latlng.lng }));
+    map.on("mouseout",  () => setCursorPos(null));
 
     mapRef.current = map;
     return () => {
@@ -361,6 +406,7 @@ export function MapView({
       mapRef.current     = null;
       tileRef.current    = null;
       clusterRef.current = null;
+      aisLayerRef.current= null;
     };
   }, [leafletReady]);
 
@@ -369,15 +415,93 @@ export function MapView({
     const L   = LRef.current;
     const map = mapRef.current;
     if (!L || !map || !tileRef.current) return;
+
+    if (mapMode === "planet") {
+      // Planet mode is handled separately via planetTileRef
+      tileRef.current.remove();
+      tileRef.current = L.tileLayer(MAP_TILES.satellite, {
+        attribution: "&copy; Esri — Planet Labs", maxZoom: 18,
+      }).addTo(map);
+      return;
+    }
+
     tileRef.current.remove();
     tileRef.current = L.tileLayer(MAP_TILES[mapMode], {
-      attribution: mapMode === "satellite"
-        ? "&copy; Esri &mdash; USGS / NOAA"
-        : "&copy; <a href='https://carto.com/'>CARTO</a>",
+      attribution: mapMode === "satellite" ? "&copy; Esri — USGS / NOAA" : "&copy; <a href='https://carto.com/'>CARTO</a>",
       maxZoom: 18,
       ...(mapMode !== "satellite" ? { subdomains: "abcd" } : {}),
     }).addTo(map);
+
+    // Remove planet overlay when switching away
+    if (planetTileRef.current) {
+      planetTileRef.current.remove();
+      planetTileRef.current = null;
+      setPlanetActive(false);
+    }
   }, [mapMode]);
+
+  // Fetch Planet Labs token and activate Planet tile layer
+  const activatePlanetLayer = useCallback(async () => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+
+    if (planetActive) {
+      // Toggle off
+      if (planetTileRef.current) {
+        planetTileRef.current.remove();
+        planetTileRef.current = null;
+      }
+      setPlanetActive(false);
+      setPlanetError(null);
+      return;
+    }
+
+    setPlanetLoading(true);
+    setPlanetError(null);
+
+    try {
+      // Get Planet token from edge function
+      let token = planetTokenRef.current;
+      if (!token) {
+        const { data, error } = await supabase.functions.invoke("sentinel-feeds", {
+          body: { action: "get_planet_token" },
+        });
+        if (error) throw new Error(error.message);
+        token = data?.token ?? null;
+        planetTokenRef.current = token;
+      }
+
+      if (!token) throw new Error("No Planet token received");
+
+      // Planet Basemaps tile URL — uses nicfi-composite for global recent imagery
+      // Format: https://tiles.planet.com/basemaps/v1/planet-tiles/{basemap_name}/gmap/{z}/{x}/{y}.png?api_key={key}
+      const basemapName = "planet_medres_visual_2024-01_mosaic";
+      const tileUrl = `https://tiles.planet.com/basemaps/v1/planet-tiles/${basemapName}/gmap/{z}/{x}/{y}.png?api_key=${token}`;
+
+      // Add as overlay on top of existing tile layer
+      const planetLayer = L.tileLayer(tileUrl, {
+        attribution: "&copy; Planet Labs PBC",
+        maxZoom: 15,
+        maxNativeZoom: 15,
+        opacity: 0.85,
+        errorTileUrl: "",
+      });
+
+      // Test if tiles load (optional graceful fallback)
+      planetLayer.addTo(map);
+      planetTileRef.current = planetLayer;
+      setPlanetActive(true);
+      console.log("[Planet] Tile layer activated with basemap:", basemapName);
+    } catch (err: unknown) {
+      const msg = (err as Error).message;
+      console.warn("[Planet] Failed to activate:", msg);
+      setPlanetError(msg.includes("Planet credentials") ? "Planet API key not configured" : "Planet tile layer unavailable");
+      setPlanetActive(false);
+    } finally {
+      setPlanetLoading(false);
+    }
+  }, [planetActive]);
 
   // Render hotspot zones
   useEffect(() => {
@@ -389,13 +513,9 @@ export function MapView({
 
     HOTSPOT_ZONES.forEach((zone) => {
       L.circle([zone.lat, zone.lon], {
-        radius:      zone.radius * 1000,
-        color:       "rgba(239,68,68,0.55)",
-        fillColor:   "rgba(239,68,68,0.04)",
-        fillOpacity: 1,
-        weight:      1,
-        dashArray:   "6 4",
-        interactive: false,
+        radius: zone.radius * 1000,
+        color: "rgba(239,68,68,0.55)", fillColor: "rgba(239,68,68,0.04)", fillOpacity: 1,
+        weight: 1, dashArray: "6 4", interactive: false,
       }).addTo(hg);
 
       L.marker([zone.lat, zone.lon], {
@@ -408,16 +528,13 @@ export function MapView({
             pointer-events:none;box-shadow:0 0 8px rgba(239,68,68,0.25)">
             ${zone.name.toUpperCase()}
           </div>`,
-          iconSize:   [0, 0],
-          iconAnchor: [0, 0],
+          iconSize: [0, 0], iconAnchor: [0, 0],
         }),
-        interactive:  false,
-        zIndexOffset: -100,
+        interactive: false, zIndexOffset: -100,
       }).addTo(hg);
     });
   }, [showHotspots, leafletReady]);
 
-  // Sync clusterModeRef so renderEntities always sees the latest value
   useEffect(() => { clusterModeRef.current = clusterMode; }, [clusterMode]);
 
   // Render / update entity markers
@@ -428,7 +545,6 @@ export function MapView({
     if (!L || !map || !group) return;
 
     const useClusters = clusterModeRef.current && !!(L as any).markerClusterGroup;
-
     const visible = entities.filter((e) => enabledDomains.has(e.domain));
     const visSet  = new Set(visible.map((e) => e.id));
 
@@ -468,14 +584,10 @@ export function MapView({
         markersRef.current.set(entity.id, marker);
       }
 
-      // Entity historical trail
       if (showTrails && entity.track && entity.track.length >= 1) {
-        const pts = [
-          ...entity.track.map((p) => [p.lat, p.lon] as [number, number]),
-          latlng,
-        ];
-        const col  = severityToColor(entity.severity);
-        const exT  = trailsRef.current.get(entity.id);
+        const pts = [...entity.track.map((p) => [p.lat, p.lon] as [number, number]), latlng];
+        const col = severityToColor(entity.severity);
+        const exT = trailsRef.current.get(entity.id);
         if (exT) {
           exT.setLatLngs(pts);
         } else {
@@ -493,7 +605,51 @@ export function MapView({
     setEntityCount(visible.length);
   }, [entities, enabledDomains, selectedEntityId, showTrails, onEntitySelect]);
 
-  // When cluster mode toggles, clear all markers so they're re-added to the right group
+  // Render AIS vessel markers
+  const renderAISVessels = useCallback(() => {
+    const L        = LRef.current;
+    const map      = mapRef.current;
+    const aisLayer = aisLayerRef.current;
+    if (!L || !map || !aisLayer) return;
+
+    if (!showAISLayer) {
+      // Clear all AIS markers
+      for (const marker of aisMarkersRef.current.values()) marker.remove();
+      aisMarkersRef.current.clear();
+      setAisVesselCount(0);
+      return;
+    }
+
+    const visSet = new Set(aisEntities.map((e) => e.id));
+
+    // Remove stale AIS markers
+    for (const [id, marker] of aisMarkersRef.current) {
+      if (!visSet.has(id)) { marker.remove(); aisMarkersRef.current.delete(id); }
+    }
+
+    // Add/update AIS markers
+    for (const entity of aisEntities) {
+      const isSelected = entity.id === selectedEntityId;
+      const icon       = buildAISIcon(L, entity, isSelected);
+      const latlng: [number, number] = [entity.position.lat, entity.position.lon];
+
+      const existing = aisMarkersRef.current.get(entity.id);
+      if (existing) {
+        existing.setLatLng(latlng);
+        existing.setIcon(icon);
+        existing.setPopupContent(buildPopupHtml(entity));
+      } else {
+        const marker = L.marker(latlng, { icon, riseOnHover: true, zIndexOffset: 10 })
+          .bindPopup(buildPopupHtml(entity), { maxWidth: 280, className: "sx-popup", closeButton: true })
+          .on("click", () => onEntitySelect(entity))
+          .addTo(aisLayer);
+        aisMarkersRef.current.set(entity.id, marker);
+      }
+    }
+
+    setAisVesselCount(aisEntities.length);
+  }, [aisEntities, selectedEntityId, showAISLayer, onEntitySelect]);
+
   useEffect(() => {
     const group = clusterRef.current;
     if (!group) return;
@@ -502,34 +658,31 @@ export function MapView({
   }, [clusterMode]);
 
   useEffect(() => { renderEntities(); }, [renderEntities]);
+  useEffect(() => { renderAISVessels(); }, [renderAISVessels]);
 
   // Pan + open popup for selected entity
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selectedEntityId) return;
-    const entity = entities.find((e) => e.id === selectedEntityId);
+    const allEntities = [...entities, ...aisEntities];
+    const entity = allEntities.find((e) => e.id === selectedEntityId);
     if (!entity) return;
     map.panTo([entity.position.lat, entity.position.lon], { animate: true, duration: 0.8 });
-    markersRef.current.get(selectedEntityId)?.openPopup();
-  }, [selectedEntityId, entities]);
+    const marker = markersRef.current.get(selectedEntityId) ?? aisMarkersRef.current.get(selectedEntityId);
+    marker?.openPopup();
+  }, [selectedEntityId, entities, aisEntities]);
 
-  const tileFilter   = OVERLAY_FILTERS[overlayMode];
-  const vignetteClr  = OVERLAY_VIGNETTE[overlayMode];
+  const tileFilter  = OVERLAY_FILTERS[overlayMode];
+  const vignetteClr = OVERLAY_VIGNETTE[overlayMode];
 
   return (
     <div className="relative flex-1 min-h-0 w-full h-full overflow-hidden">
-      {/* Leaflet mount point — filter applied to tile layer itself */}
       <div
         ref={containerRef}
         className="absolute inset-0"
-        style={{
-          background: "#020617",
-          filter: tileFilter,
-          transition: "filter 0.4s ease",
-        }}
+        style={{ background: "#020617", filter: tileFilter, transition: "filter 0.4s ease" }}
       />
 
-      {/* Overlay mode vignette */}
       {overlayMode !== "normal" && (
         <div
           className="absolute inset-0 pointer-events-none z-[399]"
@@ -540,7 +693,6 @@ export function MapView({
         />
       )}
 
-      {/* Scanline texture */}
       <div
         className="absolute inset-0 pointer-events-none z-[400]"
         style={{
@@ -548,7 +700,6 @@ export function MapView({
         }}
       />
 
-      {/* Corner brackets */}
       {(["top-0 left-0 border-t-2 border-l-2",
          "top-0 right-0 border-t-2 border-r-2",
          "bottom-0 left-0 border-b-2 border-l-2",
@@ -566,6 +717,11 @@ export function MapView({
         </div>
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.5)" }}>
           ENTITIES: <span style={{ color: "#00d4ff", fontWeight: "bold" }}>{entityCount}</span>&nbsp;ACTIVE
+          {aisVesselCount > 0 && (
+            <span style={{ color: "#22d3ee", marginLeft: 6 }}>
+              // AIS: <span style={{ fontWeight: "bold" }}>{aisVesselCount}</span> VESSELS
+            </span>
+          )}
         </div>
         {cursorPos && (
           <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.7)" }}>
@@ -574,11 +730,13 @@ export function MapView({
           </div>
         )}
         {overlayMode !== "normal" && (
-          <div
-            className="font-mono font-bold"
-            style={{ fontSize: 9, color: overlayMode === "flir" ? "#f97316" : "#10b981", letterSpacing: "0.12em" }}
-          >
+          <div className="font-mono font-bold" style={{ fontSize: 9, color: overlayMode === "flir" ? "#f97316" : "#10b981", letterSpacing: "0.12em" }}>
             ● {overlayLabel[overlayMode]}
+          </div>
+        )}
+        {planetActive && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(34,211,238,0.7)", letterSpacing: "0.1em" }}>
+            ⊙ PLANET LABS IMAGERY ACTIVE
           </div>
         )}
       </div>
@@ -594,9 +752,14 @@ export function MapView({
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.4)" }}>
           STREAM: LIVE // Δt: 3s
         </div>
+        {aisConnected && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(34,211,238,0.6)" }}>
+            AIS WS: LIVE // MSG: {aisMessageCount}
+          </div>
+        )}
       </div>
 
-      {/* BL — Map mode toggle + cluster toggle */}
+      {/* BL — Map mode + cluster + AIS + Planet toggles */}
       <div className="absolute z-[402] flex flex-col gap-1" style={{ bottom: 44, left: 12 }}>
         <button
           onClick={() => setClusterMode((v) => !v)}
@@ -605,18 +768,49 @@ export function MapView({
             color:          clusterMode ? "#a855f7" : "#475569",
             border:         clusterMode ? "1px solid rgba(168,85,247,0.4)" : "1px solid rgba(30,58,95,0.7)",
             backdropFilter: "blur(6px)",
-            fontFamily:     "'Share Tech Mono',monospace",
-            fontSize:       9,
-            letterSpacing:  "0.1em",
-            padding:        "3px 8px",
-            borderRadius:   2,
-            cursor:         "pointer",
-            textTransform:  "uppercase",
-            transition:     "all 0.15s",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: "pointer", textTransform: "uppercase", transition: "all 0.15s",
           }}
         >
           {clusterMode ? "⬡ CLUSTER" : "○ SCATTER"}
         </button>
+
+        {/* AIS toggle */}
+        <button
+          onClick={() => setShowAISLayer((v) => !v)}
+          style={{
+            background:     showAISLayer && aisConnected ? "rgba(34,211,238,0.15)" : "rgba(13,20,36,0.88)",
+            color:          showAISLayer && aisConnected ? "#22d3ee" : aisConnected ? "#22d3ee60" : "#475569",
+            border:         showAISLayer && aisConnected ? "1px solid rgba(34,211,238,0.35)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+        >
+          {aisConnected ? (showAISLayer ? `⛵ AIS ${aisVesselCount}` : "⛵ AIS OFF") : "⛵ AIS —"}
+        </button>
+
+        {/* Planet Labs toggle */}
+        <button
+          onClick={activatePlanetLayer}
+          disabled={planetLoading}
+          style={{
+            background:     planetActive ? "rgba(34,211,238,0.12)" : "rgba(13,20,36,0.88)",
+            color:          planetLoading ? "#475569" : planetActive ? "#22d3ee" : planetError ? "#ef4444" : "#475569",
+            border:         planetActive ? "1px solid rgba(34,211,238,0.3)" : planetError ? "1px solid rgba(239,68,68,0.3)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: planetLoading ? "default" : "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+          title={planetError ?? "Toggle Planet Labs satellite imagery overlay"}
+        >
+          {planetLoading ? "⊙ PLANET…" : planetActive ? "⊙ PLANET ON" : "⊙ PLANET"}
+        </button>
+
+        {/* Map base tiles */}
         {(["dark", "satellite"] as const).map((mode) => (
           <button
             key={mode}
@@ -626,14 +820,9 @@ export function MapView({
               color:          mapMode === mode ? "#00d4ff" : "#475569",
               border:         mapMode === mode ? "1px solid rgba(0,212,255,0.4)" : "1px solid rgba(30,58,95,0.7)",
               backdropFilter: "blur(6px)",
-              fontFamily:     "'Share Tech Mono',monospace",
-              fontSize:       9,
-              letterSpacing:  "0.1em",
-              padding:        "3px 8px",
-              borderRadius:   2,
-              cursor:         "pointer",
-              textTransform:  "uppercase",
-              transition:     "all 0.15s",
+              fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+              letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+              cursor: "pointer", textTransform: "uppercase", transition: "all 0.15s",
             }}
           >
             {mode === "dark" ? "TACTICAL" : "SAT VIEW"}
@@ -641,20 +830,30 @@ export function MapView({
         ))}
       </div>
 
-      {/* BR — Mini radar sweep */}
-      <MiniRadar entityCount={entityCount} />
+      {/* BR — Mini radar */}
+      <MiniRadar entityCount={entityCount} aisCount={aisVesselCount} />
+
+      {/* Planet error tooltip */}
+      {planetError && (
+        <div
+          className="absolute z-[402] font-mono text-[8px] px-2 py-1 rounded"
+          style={{
+            bottom: 44, left: 12 + 90,
+            background: "rgba(239,68,68,0.1)",
+            border: "1px solid rgba(239,68,68,0.3)",
+            color: "#ef4444",
+          }}
+        >
+          {planetError}
+        </div>
+      )}
 
       {/* Loading overlay */}
       {!leafletReady && (
-        <div className="absolute inset-0 z-[410] flex items-center justify-center"
-          style={{ background: "#020617" }}>
+        <div className="absolute inset-0 z-[410] flex items-center justify-center" style={{ background: "#020617" }}>
           <div className="text-center space-y-4">
-            <div className="font-mono text-sx-cyan text-sm tracking-[0.3em]">
-              INITIALIZING TACTICAL DISPLAY
-            </div>
-            <div className="font-mono text-sx-text-muted text-xs tracking-widest">
-              LOADING GEOSPATIAL ENGINE…
-            </div>
+            <div className="font-mono text-sx-cyan text-sm tracking-[0.3em]">INITIALIZING TACTICAL DISPLAY</div>
+            <div className="font-mono text-sx-text-muted text-xs tracking-widest">LOADING GEOSPATIAL ENGINE…</div>
             <div className="flex justify-center gap-1">
               {Array.from({ length: 8 }, (_, i) => (
                 <div key={i} className="w-1 rounded-full bg-sx-cyan/40" style={{
@@ -664,14 +863,10 @@ export function MapView({
                 }} />
               ))}
             </div>
-            <div className="font-mono text-[9px] text-sx-text-muted tracking-widest">
-              CONNECTING TO SENTINEL STREAM…
-            </div>
+            <div className="font-mono text-[9px] text-sx-text-muted tracking-widest">CONNECTING TO SENTINEL STREAM…</div>
           </div>
         </div>
       )}
     </div>
   );
 }
-
-

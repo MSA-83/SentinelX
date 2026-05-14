@@ -615,6 +615,53 @@ async function handleAISToken(): Promise<Response> {
   );
 }
 
+// ─── Planet Labs tile token delivery ─────────────────────────────────────────
+
+async function handlePlanetToken(): Promise<Response> {
+  const apiKey = Deno.env.get("PLANET_API_KEY");
+  const clientId = Deno.env.get("PLANET_CLIENT_ID");
+  const clientSecret = Deno.env.get("PLANET_CLIENT_SECRET");
+
+  // Try OAuth token first for richer API access
+  if (clientId && clientSecret) {
+    try {
+      const tokenRes = await fetch("https://api.planet.com/v0/auth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (tokenRes.ok) {
+        const tokenData = await tokenRes.json();
+        const accessToken = tokenData?.access_token;
+        if (accessToken) {
+          console.log("Planet OAuth token issued");
+          return new Response(
+            JSON.stringify({ token: accessToken, type: "bearer", source: "oauth" }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+    } catch (e) {
+      console.warn("Planet OAuth failed, falling back to API key:", e);
+    }
+  }
+
+  // Fall back to API key
+  if (apiKey) {
+    console.log("Planet API key delivered");
+    return new Response(
+      JSON.stringify({ token: apiKey, type: "apikey", source: "apikey" }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  return new Response(
+    JSON.stringify({ error: "Planet credentials not configured" }),
+    { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
+
 // ─── Space-Track TLE + Conjunction Feed ──────────────────────────────────────
 
 async function fetchSpaceTrack(): Promise<FeedResult> {
@@ -765,6 +812,31 @@ Deno.serve(async (req: Request) => {
     }
     if (body.action === "get_ais_token") {
       return handleAISToken();
+    }
+    if (body.action === "get_planet_token") {
+      return handlePlanetToken();
+    }
+    // Support domain param via body for POST requests
+    if (body.domain && typeof body.domain === "string") {
+      const fetchMap: Record<string, () => Promise<FeedResult>> = {
+        seismic:    fetchSeismic,
+        weather:    fetchWeather,
+        orbital:    fetchOrbital,
+        wildfire:   fetchWildfire,
+        conflict:   fetchConflict,
+        cyber:      fetchCyber,
+        aviation:   fetchAviation,
+        maritime:   fetchMaritime,
+        spacetrack: fetchSpaceTrack,
+      };
+      const fn = fetchMap[body.domain as string];
+      if (fn) {
+        const result = await fn();
+        return new Response(
+          JSON.stringify({ feeds: [result], summary: { totalEntities: result.entities.length, feedCount: 1, generatedAt: new Date().toISOString() } }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     const url = new URL(req.url);

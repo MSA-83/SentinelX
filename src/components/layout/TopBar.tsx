@@ -21,6 +21,8 @@ interface TopBarProps {
   onOverlayModeChange: (mode: MapOverlayMode) => void;
   onOpenCopilot?: () => void;
   copilotOpen?: boolean;
+  onOpenConjunctionPanel?: () => void;
+  conjunctionPanelOpen?: boolean;
   events?: StreamEvent[];
   onAcknowledgeEvent?: (id: string) => void;
 }
@@ -46,6 +48,8 @@ export function TopBar({
   onOverlayModeChange,
   onOpenCopilot,
   copilotOpen,
+  onOpenConjunctionPanel,
+  conjunctionPanelOpen,
   events,
   onAcknowledgeEvent,
 }: TopBarProps) {
@@ -189,6 +193,23 @@ export function TopBar({
             <span>SEARCH</span>
             <kbd className="px-1 py-0.5 rounded text-[8px]" style={{ background: "#1e3a5f", color: "#475569" }}>⌃K</kbd>
           </button>
+
+          {/* Space-Track Conjunction Panel toggle */}
+          {onOpenConjunctionPanel && (
+            <button
+              onClick={onOpenConjunctionPanel}
+              className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded font-mono text-[9px] transition-all"
+              style={{
+                background: conjunctionPanelOpen ? "rgba(245,158,11,0.15)" : "#0a0f1e",
+                border: conjunctionPanelOpen ? "1px solid rgba(245,158,11,0.35)" : "1px solid #0f2040",
+                color: conjunctionPanelOpen ? "#f59e0b" : "#334155",
+              }}
+              title="Space-Track Conjunction Alerts"
+            >
+              <span>⊙</span>
+              <span>CDM</span>
+            </button>
+          )}
 
           {/* AI Copilot toggle */}
           {onOpenCopilot && (

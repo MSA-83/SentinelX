@@ -6,6 +6,7 @@ import { useOutletContext } from "react-router-dom";
 import type { SentinelEntity, DomainKey, MissionWorkspace } from "@/types/entities";
 import { useEntityStream } from "@/hooks/useEntityStream";
 import { useLiveFeeds } from "@/hooks/useLiveFeeds";
+import { useAISStream } from "@/hooks/useAISStream";
 import { computeThreatAssessment } from "@/lib/threatAssessor";
 import { TopBar, type MapOverlayMode } from "@/components/layout/TopBar";
 import { LeftPanel } from "@/components/layout/LeftPanel";
@@ -14,6 +15,7 @@ import { MapView } from "@/components/features/MapView";
 import { StatusBar } from "@/components/features/StatusBar";
 import { CommandBar } from "@/components/features/CommandBar";
 import { AICopilot } from "@/components/features/AICopilot";
+import { ConjunctionAlertPanel } from "@/components/features/ConjunctionAlertPanel";
 
 const DEFAULT_WORKSPACES: MissionWorkspace[] = [
   {
@@ -71,6 +73,7 @@ export function Dashboard() {
   } = useEntityStream();
 
   const liveFeeds = useLiveFeeds();
+  const aisStream = useAISStream(true);
 
   const outletCtx = useOutletContext<{ navCollapsed: boolean; toggleNav: () => void } | undefined>();
   const [selectedEntity,    setSelectedEntity]    = useState<SentinelEntity | null>(null);
@@ -81,7 +84,8 @@ export function Dashboard() {
   const [showTrails,        setShowTrails]        = useState(true);
   const [overlayMode,       setOverlayMode]       = useState<MapOverlayMode>("normal");
   const [commandBarOpen,    setCommandBarOpen]    = useState(false);
-  const [copilotOpen,       setCopilotOpen]       = useState(false);
+  const [copilotOpen,           setCopilotOpen]           = useState(false);
+  const [conjunctionPanelOpen,  setConjunctionPanelOpen]  = useState(false);
 
   const enabledDomains = useMemo<Set<DomainKey>>(() => {
     const enabled = new Set<DomainKey>();
@@ -165,6 +169,8 @@ export function Dashboard() {
         onOverlayModeChange={setOverlayMode}
         onOpenCopilot={() => setCopilotOpen((v) => !v)}
         copilotOpen={copilotOpen}
+        onOpenConjunctionPanel={() => setConjunctionPanelOpen((v) => !v)}
+        conjunctionPanelOpen={conjunctionPanelOpen}
         events={events}
         onAcknowledgeEvent={acknowledgeEvent}
       />
@@ -189,6 +195,9 @@ export function Dashboard() {
             showHotspots={showHotspots}
             showTrails={showTrails}
             overlayMode={overlayMode}
+            aisEntities={aisStream.entities}
+            aisConnected={aisStream.connected}
+            aisMessageCount={aisStream.messageCount}
           />
         </div>
 
@@ -233,6 +242,10 @@ export function Dashboard() {
           threatAssessment={threatAssessment}
           onClose={() => setCopilotOpen(false)}
         />
+      )}
+
+      {conjunctionPanelOpen && (
+        <ConjunctionAlertPanel onClose={() => setConjunctionPanelOpen(false)} />
       )}
     </div>
   );

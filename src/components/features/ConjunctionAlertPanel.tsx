@@ -94,12 +94,6 @@ export function ConjunctionAlertPanel({ onClose }: ConjunctionAlertPanelProps) {
     setState((p) => ({ ...p, loading: true, error: null }));
 
     try {
-      const { data, error } = await supabase.functions.invoke("sentinel-feeds", {
-        body: {},
-        // Use GET with ?domain=spacetrack
-      });
-
-      // Actually call with domain param via URL
       const res = await supabase.functions.invoke("sentinel-feeds", {
         body: { domain: "spacetrack" } as Record<string, unknown>,
       });
@@ -111,8 +105,6 @@ export function ConjunctionAlertPanel({ onClose }: ConjunctionAlertPanelProps) {
         }
         throw new Error(msg);
       }
-
-      void data; void error;
 
       const feedData = res.data;
       const feed = feedData?.feeds?.[0];

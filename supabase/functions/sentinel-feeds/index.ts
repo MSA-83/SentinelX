@@ -366,7 +366,7 @@ async function fetchConflict(): Promise<FeedResult> {
 
       const sev = newsSeverity(article.title ?? "");
       entities.push({
-        id: `news-${Buffer.from(article.url ?? placed.toString()).toString("base64").slice(0, 12)}`,
+        id: `news-${btoa(encodeURIComponent(article.url ?? placed.toString())).slice(0, 12)}`,
         domain: "conflict",
         type: "CONFLICT_EVENT",
         label: (article.title ?? "CONFLICT EVENT").slice(0, 50),

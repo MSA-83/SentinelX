@@ -1,5 +1,6 @@
 // src/components/layout/RightPanel.tsx
 import { useState, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import type { StreamEvent, SentinelEntity, ThreatAssessment } from "@/types/entities";
 import { severityToColor, severityToBgColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS } from "@/constants/domains";
@@ -7,7 +8,9 @@ import { SitrepPanel } from "@/components/features/SitrepPanel";
 import { AISVesselSidebar } from "@/components/features/AISVesselSidebar";
 import { AnomalyExplainer } from "@/components/features/AnomalyExplainer";
 import { alertsApi } from "@/lib/api/alerts";
+import { casesApi } from "@/lib/api/cases";
 import { useAuth } from "@/hooks/useAuth";
+import { toast } from "sonner";
 
 interface RightPanelProps {
   events: StreamEvent[];
@@ -448,8 +451,10 @@ function BreachLogTab({
   onAcknowledge: (id: string) => void;
 }) {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const persistedRef = useRef<Set<string>>(new Set());
   const [ackLoading, setAckLoading] = useState<string | null>(null);
+  const [caseLoading, setCaseLoading] = useState<string | null>(null);
   const [filter, setFilter] = useState<"ALL" | "GEOFENCE" | "CDM">("ALL");
 
   const filtered = events.filter((e) => {
@@ -460,15 +465,12 @@ function BreachLogTab({
 
   // Parse fence/object name from title
   const parseFenceName = (title: string): string => {
-    // "⚠ GEOFENCE BREACH: ZONE NAME" → "ZONE NAME"
-    // "⚠ CONJUNCTION ALERT: SAT1 × SAT2" → "SAT1 × SAT2"
     const match = title.match(/:\s*(.+)$/);
     return match?.[1] ?? title;
   };
 
   // Parse entity label from description
   const parseEntityLabel = (desc: string): string => {
-    // "ENTITY_LABEL (TYPE) entered..." → "ENTITY_LABEL"
     const match = desc.match(/^([^(]+)/);
     return match?.[1]?.trim() ?? desc.slice(0, 30);
   };
@@ -478,9 +480,7 @@ function BreachLogTab({
       if (ackLoading) return;
       setAckLoading(event.id);
       try {
-        // Acknowledge in-memory
         onAcknowledge(event.id);
-        // Persist to alerts_history (deduplicated)
         if (user && !persistedRef.current.has(event.id)) {
           persistedRef.current.add(event.id);
           await alertsApi.persist(event);
@@ -492,6 +492,51 @@ function BreachLogTab({
       }
     },
     [onAcknowledge, user, ackLoading]
+  );
+
+  // Build case description from a CDM event
+  const buildCdmCaseDescription = (event: StreamEvent): string => {
+    // Try to extract Pc and miss-distance from the description text
+    const desc = event.description ?? "";
+    return [
+      `CONJUNCTION ALERT: ${parseFenceName(event.title)}`,
+      "",
+      desc,
+      "",
+      `SENTINEL-X ALERT ID: ${event.id}`,
+      `DETECTED: ${new Date(event.ts).toUTCString()}`,
+      `SEVERITY: ${event.severity}`,
+      "",
+      "ACTION REQUIRED: Verify conjunction data with Space-Track CDM. ",
+      "Coordinate avoidance manoeuvre with spacecraft operations if Pc > 1×10⁻³.",
+    ].join("\n");
+  };
+
+  const handleCreateCase = useCallback(
+    async (event: StreamEvent) => {
+      if (!user || caseLoading) return;
+      setCaseLoading(event.id);
+      try {
+        const title = `CDM: ${parseFenceName(event.title).slice(0, 80)}`;
+        const created = await casesApi.create({
+          title,
+          description: buildCdmCaseDescription(event),
+          priority:       "CRITICAL",
+          classification: "SECRET",
+          status:         "OPEN",
+          created_by:     user.id,
+          alert_ids:      [event.id],
+        });
+        toast.success(`Case ${created.case_number} created — navigating to Case Management`);
+        // Small delay to let toast display
+        setTimeout(() => navigate("/cases", { state: { openCaseId: created.id } }), 600);
+      } catch (err: unknown) {
+        toast.error(`Failed to create case: ${(err as Error).message}`);
+      } finally {
+        setCaseLoading(null);
+      }
+    },
+    [user, caseLoading, navigate]
   );
 
   const geofenceCount   = events.filter((e) => e.id.startsWith("breach-")).length;
@@ -651,6 +696,25 @@ function BreachLogTab({
                     {ackLoading === event.id ? "PERSISTING…" : "ACK + PERSIST TO DB"}
                   </button>
                 )}
+
+                {/* CREATE CASE button — CDM events only */}
+                {isCdm && (
+                  <button
+                    onClick={() => handleCreateCase(event)}
+                    disabled={caseLoading === event.id || !user}
+                    className="w-full py-1 rounded font-mono text-[9px] font-bold uppercase tracking-wider transition-all mt-1"
+                    style={{
+                      background:  caseLoading === event.id ? "transparent" : "rgba(239,68,68,0.08)",
+                      border:      `1px solid ${caseLoading === event.id ? "#1e3a5f" : "rgba(239,68,68,0.3)"}`,
+                      color:       caseLoading === event.id || !user ? "#334155" : "#ef4444",
+                      cursor:      caseLoading === event.id || !user ? "default" : "pointer",
+                    }}
+                    title={!user ? "Login required to create case" : "Create investigation case pre-filled with CDM data"}
+                  >
+                    {caseLoading === event.id ? "⧐ CREATING CASE…" : "📁 CREATE CASE"}
+                  </button>
+                )}
+
                 {isAcked && (
                   <div className="font-mono text-[8px] text-sx-text-muted text-center">
                     ✓ ACKNOWLEDGED

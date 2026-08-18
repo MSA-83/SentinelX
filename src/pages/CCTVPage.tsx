@@ -367,6 +367,83 @@ function PTZControls({
 
 // ─── Camera Stream Proxy View ─────────────────────────────────────────────────
 
+// ─── Motion detection engine per camera ────────────────────────────────────────
+
+function useMotionDetection(
+  camera: CCTVCamera,
+  enabled: boolean,
+  onMotion: (cameraName: string, cameraId: string) => void,
+) {
+  const prevFrameRef = useRef<Uint8ClampedArray | null>(null);
+  const intervalRef  = useRef<ReturnType<typeof setInterval>>();
+  const [motionActive, setMotionActive] = useState(false);
+  const cooldownRef = useRef(false);
+
+  // Simulate a "frame" as a 32×32 noise array (no real RTSP stream)
+  const generateSimFrame = (): Uint8ClampedArray => {
+    const data = new Uint8ClampedArray(32 * 32 * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      const n = Math.random() * 20 + 4;
+      data[i]     = n * 0.3;
+      data[i + 1] = n * 0.5;
+      data[i + 2] = n * 1.5;
+      data[i + 3] = 255;
+    }
+    // Occasionally inject a large "object" moving through the scene
+    if (Math.random() < 0.04) {
+      const ox = Math.floor(Math.random() * 24) * 4;
+      const oy = Math.floor(Math.random() * 24);
+      for (let row = oy; row < oy + 8; row++) {
+        for (let col = ox; col < ox + 8 * 4; col += 4) {
+          const idx = (row * 32 + col / 4) * 4;
+          if (idx + 3 < data.length) {
+            data[idx]     = 180 + Math.random() * 60;
+            data[idx + 1] = 120 + Math.random() * 40;
+            data[idx + 2] = 20  + Math.random() * 20;
+            data[idx + 3] = 255;
+          }
+        }
+      }
+    }
+    return data;
+  };
+
+  useEffect(() => {
+    if (!enabled || camera.status !== "online") return;
+
+    intervalRef.current = setInterval(() => {
+      const frame = generateSimFrame();
+      if (prevFrameRef.current) {
+        // Compute mean absolute delta across all pixels
+        let totalDelta = 0;
+        for (let i = 0; i < frame.length; i += 4) {
+          totalDelta +=
+            Math.abs(frame[i]     - prevFrameRef.current[i])     +
+            Math.abs(frame[i + 1] - prevFrameRef.current[i + 1]) +
+            Math.abs(frame[i + 2] - prevFrameRef.current[i + 2]);
+        }
+        const meanDelta = totalDelta / (frame.length / 4);
+        // Threshold: mean pixel delta > 22 triggers motion
+        if (meanDelta > 22 && !cooldownRef.current) {
+          cooldownRef.current = true;
+          setMotionActive(true);
+          onMotion(camera.name, camera.id);
+          // Flash duration: 2.5 s, then 10 s cooldown before next trigger
+          setTimeout(() => setMotionActive(false), 2500);
+          setTimeout(() => { cooldownRef.current = false; }, 12000);
+        }
+      }
+      prevFrameRef.current = frame;
+    }, 1200); // check every 1.2 s
+
+    return () => clearInterval(intervalRef.current);
+  }, [enabled, camera.status, camera.id]);
+
+  return motionActive;
+}
+
+// ─── Camera Stream Proxy View ─────────────────────────────────────────────────
+
 function CameraView({
   camera,
   isFullscreen,
@@ -374,6 +451,7 @@ function CameraView({
   onClose,
   onAuditLog,
   ptzState,
+  motionDetectionEnabled,
 }: {
   camera: CCTVCamera;
   isFullscreen: boolean;
@@ -381,11 +459,24 @@ function CameraView({
   onClose?: () => void;
   onAuditLog: (action: string, cameraId: string) => void;
   ptzState?: PTZState;
+  motionDetectionEnabled?: boolean;
 }) {
   const statusCfg = STATUS_CONFIG[camera.status];
   const [muted, setMuted]   = useState(true);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
+
+  const motionActive = useMotionDetection(
+    camera,
+    motionDetectionEnabled ?? false,
+    (cameraName, cameraId) => {
+      toast.warning(
+        `⚠ MOTION DETECTED — ${cameraName} at ${new Date().toLocaleTimeString()}`,
+        { duration: 5000 }
+      );
+      onAuditLog("MOTION_DETECTED", cameraId);
+    }
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -411,9 +502,13 @@ function CameraView({
       className="relative flex flex-col rounded border overflow-hidden select-none"
       style={{
         background: bgColor,
-        borderColor: camera.status === "offline" ? "rgba(239,68,68,0.3)"
-                   : camera.status === "unknown"  ? "rgba(245,158,11,0.3)"
-                   : "rgba(30,58,95,0.7)",
+        borderColor: motionActive
+          ? "rgba(239,68,68,0.9)"
+          : camera.status === "offline" ? "rgba(239,68,68,0.3)"
+          : camera.status === "unknown"  ? "rgba(245,158,11,0.3)"
+          : "rgba(30,58,95,0.7)",
+        boxShadow: motionActive ? "0 0 16px rgba(239,68,68,0.45), inset 0 0 12px rgba(239,68,68,0.1)" : "none",
+        transition: "border-color 0.2s, box-shadow 0.2s",
         height: isFullscreen ? "100%" : 180,
       }}
     >
@@ -462,7 +557,21 @@ function CameraView({
                   "repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.06) 3px,rgba(0,0,0,0.06) 4px)",
               }}
             />
-            {/* Live indicator dot */}
+            {/* Motion detection indicator */}
+            {motionActive && (
+              <div
+                className="absolute top-2 left-2 flex items-center gap-1 px-1.5 py-0.5 rounded z-10"
+                style={{
+                  background: "rgba(239,68,68,0.18)",
+                  border: "1px solid rgba(239,68,68,0.6)",
+                  animation: "pulse 0.8s infinite",
+                }}
+              >
+                <div className="w-1.5 h-1.5 rounded-full" style={{ background: "#ef4444", boxShadow: "0 0 4px #ef4444" }} />
+                <span className="font-mono text-[7px] font-bold" style={{ color: "#ef4444" }}>MOTION</span>
+              </div>
+            )}
+            {/* Live indicator dot */}}
             <div className="absolute top-2 right-2 flex items-center gap-1" style={{ zIndex: 2 }}>
               <div
                 className="w-1.5 h-1.5 rounded-full"
@@ -558,11 +667,11 @@ export function CCTVPage() {
   const [newCam, setNewCam]               = useState({
     name: "", location: CAMERA_LOCATIONS[0], camera_id: "", ip_address: "", nvr_info: "",
   });
+  const [motionDetectionGlobal, setMotionDetectionGlobal] = useState(false);
   const [creating, setCreating] = useState(false);
   const statusIntervalRef       = useRef<ReturnType<typeof setInterval>>();
-  const ptzCooldownRef          = useRef(false);
 
-  // Per-camera PTZ state (pan/tilt/zoom simulation for the simulated feed)
+  const ptzCooldownRef          = useRef(false);
   const [ptzStates, setPtzStates] = useState<Record<string, PTZState>>(() =>
     Object.fromEntries(MOCK_CAMERAS.map((c) => [c.id, { pan: 0, tilt: 0, zoom: 1 }]))
   );
@@ -813,6 +922,7 @@ export function CCTVPage() {
                 onClose={() => setFullscreenCam(null)}
                 onAuditLog={logAudit}
                 ptzState={ptzStates[fullscreenCam.id]}
+                motionDetectionEnabled={motionDetectionGlobal}
               />
             </div>
 
@@ -940,31 +1050,50 @@ export function CCTVPage() {
               AUTHENTICATED STREAM ACCESS // PTZ CONTROL // ROLE-BASED // AUDIT LOGGED
             </div>
           </div>
-          <div className="flex items-center gap-5">
-            {[
-              { label: "ONLINE",  value: onlineCount,    color: "#10b981" },
-              { label: "OFFLINE", value: offlineCount,   color: "#ef4444" },
-              { label: "TOTAL",   value: cameras.length, color: "#00d4ff" },
-              { label: "STORAGE", value: `${totalStorage} GB`, color: "#f59e0b" },
-            ].map(({ label, value, color }) => (
-              <div key={label} className="text-center">
-                <div className="font-mono text-lg font-bold" style={{ color }}>{value}</div>
-                <div className="font-mono text-[9px] text-sx-text-muted">{label}</div>
-              </div>
-            ))}
-            <div
-              className="flex items-center gap-1.5 ml-2 px-3 py-1.5 rounded border"
-              style={{ background: "rgba(0,212,255,0.04)", borderColor: "rgba(0,212,255,0.15)" }}
-            >
+            <div className="flex items-center gap-5">
+              {[
+                { label: "ONLINE",  value: onlineCount,    color: "#10b981" },
+                { label: "OFFLINE", value: offlineCount,   color: "#ef4444" },
+                { label: "TOTAL",   value: cameras.length, color: "#00d4ff" },
+                { label: "STORAGE", value: `${totalStorage} GB`, color: "#f59e0b" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="text-center">
+                  <div className="font-mono text-lg font-bold" style={{ color }}>{value}</div>
+                  <div className="font-mono text-[9px] text-sx-text-muted">{label}</div>
+                </div>
+              ))}
+              {/* Motion detection global toggle */}
+              <button
+                onClick={() => {
+                  setMotionDetectionGlobal((v) => !v);
+                  toast.success(motionDetectionGlobal ? "Motion detection disabled" : "Motion detection enabled");
+                }}
+                className="flex items-center gap-2 px-3 py-1.5 rounded border transition-all"
+                style={{
+                  background: motionDetectionGlobal ? "rgba(239,68,68,0.1)" : "rgba(13,20,36,0.88)",
+                  borderColor: motionDetectionGlobal ? "rgba(239,68,68,0.4)" : "rgba(30,58,95,0.7)",
+                  color: motionDetectionGlobal ? "#ef4444" : "#475569",
+                }}
+                title="Toggle canvas-based motion detection on all live cameras"
+              >
+                <span style={{ fontSize: 12 }}>{motionDetectionGlobal ? "🟥" : "□"}</span>
+                <span className="font-mono text-[9px] font-bold">
+                  {motionDetectionGlobal ? "MOTION ON" : "MOTION OFF"}
+                </span>
+              </button>
               <div
-                className="w-2 h-2 rounded-full"
-                style={{ background: "#10b981", animation: "pulse 2s infinite", boxShadow: "0 0 4px #10b981" }}
-              />
-              <span className="font-mono text-[9px]" style={{ color: "#10b981" }}>
-                SECURE STREAM PROXY ACTIVE
-              </span>
+                className="flex items-center gap-1.5 ml-2 px-3 py-1.5 rounded border"
+                style={{ background: "rgba(0,212,255,0.04)", borderColor: "rgba(0,212,255,0.15)" }}
+              >
+                <div
+                  className="w-2 h-2 rounded-full"
+                  style={{ background: "#10b981", animation: "pulse 2s infinite", boxShadow: "0 0 4px #10b981" }}
+                />
+                <span className="font-mono text-[9px]" style={{ color: "#10b981" }}>
+                  SECURE STREAM PROXY ACTIVE
+                </span>
+              </div>
             </div>
-          </div>
         </div>
 
         {/* Offline alerts banner */}
@@ -1057,7 +1186,7 @@ export function CCTVPage() {
 
             {/* Camera grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {cameras.map((cam) => (
+            {cameras.map((cam) => (
                 <CameraView
                   key={cam.id}
                   camera={cam}
@@ -1065,6 +1194,7 @@ export function CCTVPage() {
                   onFullscreen={setFullscreenCam}
                   onAuditLog={logAudit}
                   ptzState={ptzStates[cam.id]}
+                  motionDetectionEnabled={motionDetectionGlobal}
                 />
               ))}
             </div>

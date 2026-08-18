@@ -286,6 +286,143 @@ function MiniRadar({ entityCount, aisCount }: { entityCount: number; aisCount: n
   );
 }
 
+// ─── Heatmap Legend Overlay ──────────────────────────────────────────────────
+
+const SEVERITY_TIERS = [
+  { key: "CRITICAL", label: "CRITICAL", weight: 5, color: "#ef4444" },
+  { key: "HIGH",     label: "HIGH",     weight: 3, color: "#f97316" },
+  { key: "MEDIUM",   label: "MEDIUM",   weight: 1, color: "#f59e0b" },
+  { key: "LOW",      label: "LOW",      weight: 0.4, color: "#84cc16" },
+  { key: "INFO",     label: "INFO",     weight: 0.15, color: "#10b981" },
+] as const;
+
+function HeatmapLegend({
+  entities,
+  open,
+  onToggle,
+}: {
+  entities: SentinelEntity[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const counts = SEVERITY_TIERS.map((t) => ({
+    ...t,
+    count: entities.filter((e) => e.severity === t.key).length,
+  }));
+  const total = entities.length;
+
+  return (
+    <div
+      className="absolute z-[402] pointer-events-auto"
+      style={{
+        bottom: 44,
+        left: "50%",
+        transform: "translateX(-50%)",
+        minWidth: 240,
+      }}
+    >
+      {/* Toggle button */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center justify-between px-3 py-1.5 rounded-t"
+        style={{
+          background: "rgba(13,20,36,0.94)",
+          border:     "1px solid rgba(239,68,68,0.3)",
+          borderBottom: open ? "none" : "1px solid rgba(239,68,68,0.3)",
+          backdropFilter: "blur(8px)",
+          fontFamily:  "'Share Tech Mono',monospace",
+          fontSize:    9,
+          color:       "#ef4444",
+          letterSpacing: "0.12em",
+          cursor: "pointer",
+        }}
+      >
+        <span>🔥 THREAT DENSITY HEATMAP</span>
+        <span style={{ color: "rgba(239,68,68,0.5)" }}>{open ? "▴" : "▾"}</span>
+      </button>
+
+      {/* Legend body */}
+      {open && (
+        <div
+          className="px-3 pb-3 pt-2 rounded-b space-y-2"
+          style={{
+            background: "rgba(8,14,26,0.96)",
+            border: "1px solid rgba(239,68,68,0.3)",
+            borderTop: "none",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          {/* Gradient bar */}
+          <div>
+            <div
+              className="rounded-sm mb-1"
+              style={{
+                height: 8,
+                background:
+                  "linear-gradient(90deg, #10b981 0%, #84cc16 20%, #f59e0b 50%, #f97316 75%, #ef4444 100%)",
+                boxShadow: "0 0 6px rgba(239,68,68,0.25)",
+              }}
+            />
+            <div className="flex justify-between">
+              <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 7, color: "#10b981" }}>LOW</span>
+              <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 7, color: "#f59e0b" }}>MEDIUM</span>
+              <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 7, color: "#ef4444" }}>CRITICAL</span>
+            </div>
+          </div>
+
+          {/* Severity tier counts */}
+          <div className="space-y-1">
+            {counts.map(({ key, label, color, count, weight }) => (
+              <div key={key} className="flex items-center gap-2">
+                <div
+                  className="flex-shrink-0 rounded-sm"
+                  style={{ width: 8, height: 8, background: color, boxShadow: `0 0 4px ${color}60` }}
+                />
+                <div
+                  className="flex-1 h-1 rounded-full overflow-hidden"
+                  style={{ background: "rgba(30,58,95,0.5)" }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: total > 0 ? `${(count / total) * 100}%` : "0%",
+                      background: color,
+                      transition: "width 0.6s ease",
+                      boxShadow: `0 0 3px ${color}50`,
+                    }}
+                  />
+                </div>
+                <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 8, color, minWidth: 14, textAlign: "right" }}>
+                  {count}
+                </span>
+                <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 7, color: "rgba(71,85,105,0.8)", minWidth: 50 }}>
+                  {label} ×{weight}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Total */}
+          <div
+            className="flex items-center justify-between pt-1"
+            style={{ borderTop: "1px solid rgba(30,58,95,0.6)" }}
+          >
+            <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 8, color: "rgba(71,85,105,0.9)" }}>
+              TOTAL ENTITIES
+            </span>
+            <span style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 10, color: "#00d4ff", fontWeight: "bold" }}>
+              {total}
+            </span>
+          </div>
+          <div style={{ fontFamily: "'Share Tech Mono',monospace", fontSize: 7, color: "rgba(71,85,105,0.6)", textAlign: "center" }}>
+            WEIGHT = HEAT INTENSITY MULTIPLIER
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 const OVERLAY_FILTERS: Record<MapOverlayMode, string> = {
@@ -347,6 +484,7 @@ export function MapView({
   const [heatActive,     setHeatActive]     = useState(false);
   const [geofenceCount,  setGeofenceCount]  = useState(0);
   const [breachCount,    setBreachCount]    = useState(0);
+  const [heatLegendOpen, setHeatLegendOpen] = useState(true);
   const radarTileRef     = useRef<TileLayer | null>(null);
   const heatLayerRef     = useRef<any>(null);
   const aisProjectionsRef = useRef<Map<string, Polyline>>(new Map());
@@ -1072,6 +1210,12 @@ export function MapView({
             🔥 THREAT HEATMAP ACTIVE // CRITICAL=RED
           </div>
         )}
+        {heatActive && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(239,68,68,0.5)", letterSpacing: "0.08em", cursor: "pointer" }}
+            onClick={() => setHeatLegendOpen((v) => !v)}>
+            {heatLegendOpen ? "▾ HIDE LEGEND" : "▸ SHOW LEGEND"}
+          </div>
+        )}
         {radarActive && (
           <div className="font-mono" style={{ fontSize: 9, color: "rgba(99,179,237,0.75)", letterSpacing: "0.1em" }}>
             ⛈ PRECIP RADAR ACTIVE // RAINVIEWER
@@ -1202,6 +1346,15 @@ export function MapView({
           </button>
         ))}
       </div>
+
+      {/* BC — Heatmap legend overlay */}
+      {heatActive && (
+        <HeatmapLegend
+          entities={[...entities, ...aisEntities]}
+          open={heatLegendOpen}
+          onToggle={() => setHeatLegendOpen((v) => !v)}
+        />
+      )}
 
       {/* BR — Mini radar */}
       <MiniRadar entityCount={entityCount} aisCount={aisVesselCount} />

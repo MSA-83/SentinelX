@@ -467,6 +467,8 @@ export function MapView({
   const geofenceLayerRef  = useRef<LayerGroup | null>(null);
   const geofencePolyRef   = useRef<Map<string, Polygon>>(new Map());
   const breachCooldownRef = useRef<Map<string, number>>(new Map()); // fenceId:entityId → expiry ts
+  const measureLayerRef   = useRef<LayerGroup | null>(null);
+  const measurePtsRef     = useRef<[number, number][]>([]); // [start?, end?]
 
   const [mapMode,        setMapMode]        = useState<MapMode>("dark");
   const [leafletReady,   setLeafletReady]   = useState(false);
@@ -485,6 +487,11 @@ export function MapView({
   const [geofenceCount,  setGeofenceCount]  = useState(0);
   const [breachCount,    setBreachCount]    = useState(0);
   const [heatLegendOpen, setHeatLegendOpen] = useState(true);
+  const [measureMode,   setMeasureMode]   = useState(false);
+  const [measureResult, setMeasureResult] = useState<{
+    distKm: number; distNm: number; bearing: number;
+    start: [number, number]; end: [number, number];
+  } | null>(null);
   const radarTileRef     = useRef<TileLayer | null>(null);
   const heatLayerRef     = useRef<any>(null);
   const aisProjectionsRef = useRef<Map<string, Polyline>>(new Map());
@@ -494,6 +501,135 @@ export function MapView({
     flir: "FLIR // THERMAL",
     nightvision: "NV // GEN-III",
   };
+
+  // ─── Great-circle helpers ────────────────────────────────────────────────────
+  function gcDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  function gcBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const phi1 = lat1 * Math.PI / 180;
+    const phi2 = lat2 * Math.PI / 180;
+    const y = Math.sin(dLon) * Math.cos(phi2);
+    const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+
+  // ─── Measurement map-click handler ──────────────────────────────────────────
+  useEffect(() => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    const ml  = measureLayerRef.current;
+    if (!L || !map || !ml) return;
+
+    if (!measureMode) {
+      ml.clearLayers();
+      measurePtsRef.current = [];
+      setMeasureResult(null);
+      return;
+    }
+
+    const buildCrossIcon = (color: string) => L.divIcon({
+      className: "",
+      html: `<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+        <line x1="8" y1="0" x2="8" y2="16" stroke="${color}" stroke-width="1.8"/>
+        <line x1="0" y1="8" x2="16" y2="8" stroke="${color}" stroke-width="1.8"/>
+        <circle cx="8" cy="8" r="3" fill="none" stroke="${color}" stroke-width="1.5"/>
+      </svg>`,
+      iconSize:   [16, 16],
+      iconAnchor: [8, 8],
+    });
+
+    const buildMidLabel = (distKm: number, distNm: number, bearing: number) => L.divIcon({
+      className: "",
+      html: `<div style="
+        background: rgba(8,14,26,0.94);
+        border: 1px solid rgba(0,212,255,0.45);
+        border-radius: 3px;
+        padding: 4px 8px;
+        font-family: 'Share Tech Mono',monospace;
+        white-space: nowrap;
+        pointer-events: none;
+        transform: translate(-50%,-120%);
+        backdrop-filter: blur(6px);
+      ">
+        <div style="color:#00d4ff;font-size:11px;font-weight:bold">${distKm.toFixed(1)} km &nbsp; ${distNm.toFixed(1)} nm</div>
+        <div style="color:#94a3b8;font-size:9px;margin-top:2px">BRG: ${bearing.toFixed(1)}°T</div>
+      </div>`,
+      iconSize:   [0, 0],
+      iconAnchor: [0, 0],
+    });
+
+    const renderMeasure = (pts: [number, number][]) => {
+      ml.clearLayers();
+      if (pts.length === 0) return;
+
+      // Start marker — cyan cross
+      L.marker(pts[0], { icon: buildCrossIcon("#00d4ff"), interactive: false }).addTo(ml);
+
+      if (pts.length === 2) {
+        // End marker — amber cross
+        L.marker(pts[1], { icon: buildCrossIcon("#f59e0b"), interactive: false }).addTo(ml);
+
+        // Great-circle polyline (approximate with 32 intermediate points)
+        const gcPts: [number, number][] = [];
+        for (let i = 0; i <= 32; i++) {
+          const t   = i / 32;
+          const lat = pts[0][0] + (pts[1][0] - pts[0][0]) * t;
+          const lon = pts[0][1] + (pts[1][1] - pts[0][1]) * t;
+          gcPts.push([lat, lon]);
+        }
+        L.polyline(gcPts, {
+          color:       "#00d4ff",
+          weight:      1.8,
+          opacity:     0.85,
+          dashArray:   "6 5",
+          interactive: false,
+        }).addTo(ml);
+
+        // Mid-point label
+        const midLat = (pts[0][0] + pts[1][0]) / 2;
+        const midLon = (pts[0][1] + pts[1][1]) / 2;
+        const distKm = gcDistanceKm(pts[0][0], pts[0][1], pts[1][0], pts[1][1]);
+        const distNm = distKm / 1.852;
+        const brg    = gcBearing(pts[0][0], pts[0][1], pts[1][0], pts[1][1]);
+        L.marker([midLat, midLon], { icon: buildMidLabel(distKm, distNm, brg), interactive: false }).addTo(ml);
+        setMeasureResult({ distKm, distNm, bearing: brg, start: pts[0], end: pts[1] });
+      } else {
+        setMeasureResult(null);
+      }
+    };
+
+    const handleClick = (e: import("leaflet").LeafletMouseEvent) => {
+      const pt: [number, number] = [e.latlng.lat, e.latlng.lng];
+      const pts = measurePtsRef.current;
+      let newPts: [number, number][];
+      if (pts.length >= 2) {
+        // Third click — reset, start new
+        newPts = [pt];
+      } else {
+        newPts = [...pts, pt];
+      }
+      measurePtsRef.current = newPts;
+      renderMeasure(newPts);
+    };
+
+    map.on("click", handleClick);
+    // Change cursor to crosshair when measuring
+    (map.getContainer() as HTMLDivElement).style.cursor = "crosshair";
+    return () => {
+      map.off("click", handleClick);
+      (map.getContainer() as HTMLDivElement).style.cursor = "";
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measureMode]);
 
   // Toggle threat density heatmap overlay
   const toggleHeatmap = useCallback(async () => {
@@ -640,6 +776,9 @@ export function MapView({
     // Geofence overlay layer (below entity markers)
     geofenceLayerRef.current = L.layerGroup().addTo(map);
 
+    // Measurement layer (topmost interactive layer)
+    measureLayerRef.current = L.layerGroup().addTo(map);
+
     const makeClusterGroup = () => {
       const MCG = (L as any).markerClusterGroup;
       if (MCG) {
@@ -671,11 +810,12 @@ export function MapView({
     mapRef.current = map;
     return () => {
       map.remove();
-      mapRef.current          = null;
-      tileRef.current         = null;
-      clusterRef.current      = null;
-      aisLayerRef.current     = null;
-      geofenceLayerRef.current= null;
+      mapRef.current           = null;
+      tileRef.current          = null;
+      clusterRef.current       = null;
+      aisLayerRef.current      = null;
+      geofenceLayerRef.current = null;
+      measureLayerRef.current  = null;
     };
   }, [leafletReady]);
 
@@ -1216,6 +1356,16 @@ export function MapView({
             {heatLegendOpen ? "▾ HIDE LEGEND" : "▸ SHOW LEGEND"}
           </div>
         )}
+        {measureMode && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(250,204,21,0.85)", letterSpacing: "0.1em" }}>
+            ⊢ MEASURE ACTIVE — {measurePtsRef.current.length === 0 ? "CLICK START POINT" : measurePtsRef.current.length === 1 ? "CLICK END POINT" : "CLICK TO RESET"}
+          </div>
+        )}
+        {measureMode && measureResult && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(250,204,21,0.7)", letterSpacing: "0.08em" }}>
+            ⊢ {measureResult.distKm.toFixed(1)} km · {measureResult.distNm.toFixed(1)} nm · {measureResult.bearing.toFixed(1)}°T
+          </div>
+        )}
         {radarActive && (
           <div className="font-mono" style={{ fontSize: 9, color: "rgba(99,179,237,0.75)", letterSpacing: "0.1em" }}>
             ⛈ PRECIP RADAR ACTIVE // RAINVIEWER
@@ -1307,6 +1457,23 @@ export function MapView({
           title="Toggle live precipitation radar (RainViewer)"
         >
           {radarLoading ? "⟳ RADAR…" : radarActive ? "⛈ RADAR ON" : "⛈ RADAR"}
+        </button>
+
+        {/* Measurement tool toggle */}
+        <button
+          onClick={() => setMeasureMode((v) => !v)}
+          style={{
+            background:     measureMode ? "rgba(250,204,21,0.15)" : "rgba(13,20,36,0.88)",
+            color:          measureMode ? "#facc15" : "#475569",
+            border:         measureMode ? "1px solid rgba(250,204,21,0.4)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+          title={measureMode ? "Exit measurement mode (click map to clear)" : "Measure great-circle distance & bearing (click two points)"}
+        >
+          {measureMode ? "✕ MEASURE" : "⊢ MEASURE"}
         </button>
 
         {/* Planet Labs toggle */}

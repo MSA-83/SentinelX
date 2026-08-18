@@ -1,5 +1,6 @@
 // src/pages/CaseManagementPage.tsx
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import { casesApi, type Case, type CaseNote } from "@/lib/api/cases";
 import { useAuth } from "@/hooks/useAuth";
@@ -122,6 +123,8 @@ export function CaseManagementPage() {
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const location = useLocation();
+  const autoOpenedRef = useRef(false);
 
   // New case form state
   const [newTitle, setNewTitle] = useState("");
@@ -130,6 +133,21 @@ export function CaseManagementPage() {
   const [newClassification, setNewClassification] = useState("SECRET");
 
   useEffect(() => { loadCases(); }, []);
+
+  // Auto-select case passed via router state (e.g. from CREATE CASE in RightPanel)
+  useEffect(() => {
+    const openCaseId = (location.state as { openCaseId?: string } | null)?.openCaseId;
+    if (!openCaseId || autoOpenedRef.current || loading) return;
+    const target = cases.find((c) => c.id === openCaseId);
+    if (target) {
+      autoOpenedRef.current = true;
+      setSelected(target);
+      // Scroll the case into view after paint
+      requestAnimationFrame(() => {
+        document.getElementById(`case-row-${openCaseId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }, [cases, loading, location.state]);
 
   useEffect(() => {
     if (selected) loadNotes(selected.id);
@@ -281,6 +299,7 @@ export function CaseManagementPage() {
               return (
                 <button
                   key={c.id}
+                  id={`case-row-${c.id}`}
                   onClick={() => setSelected(isSelected ? null : c)}
                   className="w-full text-left px-4 py-3 transition-all"
                   style={{

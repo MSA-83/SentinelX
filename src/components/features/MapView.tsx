@@ -224,63 +224,240 @@ function buildPopupHtml(entity: SentinelEntity): string {
     </div>`;
 }
 
-// ─── Mini radar HUD widget ─────────────────────────────────────────────────────
+// ─── Compass Bearing Rose widget ────────────────────────────────────────────────
 
-function MiniRadar({ entityCount, aisCount }: { entityCount: number; aisCount: number }) {
-  const [angle, setAngle] = useState(0);
+const CARDINALS = [
+  { angle: 0,   label: "N",  primary: true  },
+  { angle: 45,  label: "NE", primary: false },
+  { angle: 90,  label: "E",  primary: true  },
+  { angle: 135, label: "SE", primary: false },
+  { angle: 180, label: "S",  primary: true  },
+  { angle: 225, label: "SW", primary: false },
+  { angle: 270, label: "W",  primary: true  },
+  { angle: 315, label: "NW", primary: false },
+] as const;
+
+const TICK_ANGLES = Array.from({ length: 36 }, (_, i) => i * 10);
+
+function CompassRose({
+  entityCount,
+  aisCount,
+  measureBearing,
+  measureMode,
+}: {
+  entityCount: number;
+  aisCount: number;
+  measureBearing: number | null;
+  measureMode: boolean;
+}) {
+  const [sweepAngle, setSweepAngle] = useState(0);
+
   useEffect(() => {
     let raf: number;
     let last = 0;
     const tick = (ts: number) => {
-      if (ts - last > 16) { setAngle((a) => (a + 1.2) % 360); last = ts; }
+      if (ts - last > 16) { setSweepAngle((a) => (a + 1.1) % 360); last = ts; }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const r  = 38;
-  const cx = 50;
-  const cy = 50;
+  const SIZE = 120;
+  const cx   = SIZE / 2;
+  const cy   = SIZE / 2;
+  const R    = 42;      // inner ring radius
+  const LR   = R + 9;  // label radius
+
+  // Rose rotates so measured bearing aligns to 12-o'clock position
+  const roseRotation = measureMode && measureBearing !== null ? -measureBearing : 0;
+
+  const toRad = (deg: number) => (deg - 90) * Math.PI / 180;
 
   return (
-    <div className="absolute z-[402] pointer-events-none select-none" style={{ bottom: 36, right: 64 }}>
-      <svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-        {[r * 0.35, r * 0.65, r].map((rr, i) => (
-          <circle key={i} cx={cx} cy={cy} r={rr} fill="none" stroke="rgba(0,212,255,0.18)" strokeWidth="0.75" />
-        ))}
-        <line x1={cx - r} y1={cy} x2={cx + r} y2={cy} stroke="rgba(0,212,255,0.12)" strokeWidth="0.5"/>
-        <line x1={cx} y1={cy - r} x2={cx} y2={cy + r} stroke="rgba(0,212,255,0.12)" strokeWidth="0.5"/>
+    <div
+      className="absolute z-[402] pointer-events-none select-none"
+      style={{ bottom: 32, right: 56 }}
+    >
+      <svg
+        width={SIZE}
+        height={SIZE}
+        viewBox={`0 0 ${SIZE} ${SIZE}`}
+        xmlns="http://www.w3.org/2000/svg"
+      >
         <defs>
-          <radialGradient id="sweepGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#00d4ff" stopOpacity="0.35"/>
+          <radialGradient id="compassSweep" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#00d4ff" stopOpacity="0.28"/>
             <stop offset="100%" stopColor="#00d4ff" stopOpacity="0"/>
           </radialGradient>
+          <filter id="compassGlow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
         </defs>
-        <path
-          d={`M ${cx} ${cy} L ${(cx + r * Math.cos(((angle - 90) * Math.PI) / 180)).toFixed(2)} ${(cy + r * Math.sin(((angle - 90) * Math.PI) / 180)).toFixed(2)} A ${r} ${r} 0 0 1 ${(cx + r * Math.cos(((angle - 90 - 55) * Math.PI) / 180)).toFixed(2)} ${(cy + r * Math.sin(((angle - 90 - 55) * Math.PI) / 180)).toFixed(2)} Z`}
-          fill="url(#sweepGrad)" opacity="0.6"
-        />
-        <line
-          x1={cx} y1={cy}
-          x2={(cx + r * Math.cos(((angle - 90) * Math.PI) / 180)).toFixed(2)}
-          y2={(cy + r * Math.sin(((angle - 90) * Math.PI) / 180)).toFixed(2)}
-          stroke="#00d4ff" strokeWidth="1" opacity="0.8"
-        />
-        <text x={cx} y={cy + 2} textAnchor="middle" fill="#00d4ff" fontSize="9" fontFamily="'Share Tech Mono',monospace" fontWeight="bold">
+
+        {/* ── Background disc ── */}
+        <circle cx={cx} cy={cy} r={LR + 4}
+          fill="rgba(8,14,26,0.82)" stroke="rgba(0,212,255,0.14)" strokeWidth="0.8"/>
+
+        {/* ── Rotating rose group ── */}
+        <g
+          transform={`rotate(${roseRotation}, ${cx}, ${cy})`}
+          style={{ transition: "transform 1s cubic-bezier(0.4,0,0.2,1)" }}
+        >
+          {/* Concentric guide rings */}
+          {[R, R * 0.55].map((r, i) => (
+            <circle key={i} cx={cx} cy={cy} r={r}
+              fill="none" stroke="rgba(0,212,255,0.12)" strokeWidth="0.6"/>
+          ))}
+
+          {/* Tick marks */}
+          {TICK_ANGLES.map((a) => {
+            const isCard  = a % 45 === 0;
+            const isPrim  = a % 90 === 0;
+            const innerR  = isPrim ? R - 9 : isCard ? R - 6 : R - 3.5;
+            const rad     = toRad(a);
+            return (
+              <line key={a}
+                x1={(cx + Math.cos(rad) * innerR).toFixed(2)}
+                y1={(cy + Math.sin(rad) * innerR).toFixed(2)}
+                x2={(cx + Math.cos(rad) * R).toFixed(2)}
+                y2={(cy + Math.sin(rad) * R).toFixed(2)}
+                stroke={isPrim ? "rgba(0,212,255,0.55)" : isCard ? "rgba(0,212,255,0.3)" : "rgba(0,212,255,0.14)"}
+                strokeWidth={isPrim ? 1.2 : isCard ? 0.8 : 0.5}
+              />
+            );
+          })}
+
+          {/* Cardinal / intercardinal labels */}
+          {CARDINALS.map(({ angle, label, primary }) => {
+            const rad  = toRad(angle);
+            const isN  = label === "N";
+            const x    = cx + Math.cos(rad) * LR;
+            const y    = cy + Math.sin(rad) * LR;
+            return (
+              <text key={label}
+                x={x.toFixed(2)} y={y.toFixed(2)}
+                textAnchor="middle" dominantBaseline="middle"
+                fill={isN ? "#ef4444" : primary ? "rgba(0,212,255,0.85)" : "rgba(0,212,255,0.42)"}
+                fontSize={isN ? 8.5 : primary ? 7 : 5.5}
+                fontFamily="'Share Tech Mono',monospace"
+                fontWeight={isN || primary ? "bold" : "normal"}
+                filter={isN ? "url(#compassGlow)" : undefined}
+              >
+                {label}
+              </text>
+            );
+          })}
+
+          {/* North arrow — filled teardrop pointing up */}
+          <path
+            d={`M ${cx} ${cy - R + 2} L ${cx - 3.5} ${cy - R + 12} L ${cx} ${cy - R + 9} L ${cx + 3.5} ${cy - R + 12} Z`}
+            fill="#ef4444" opacity="0.92"
+            filter="url(#compassGlow)"
+          />
+          <path
+            d={`M ${cx} ${cy - R * 0.55} L ${cx - 3.5} ${cy - R + 12} L ${cx} ${cy - R + 9} L ${cx + 3.5} ${cy - R + 12} Z`}
+            fill="rgba(0,0,0,0.3)"
+          />
+
+          {/* South stub of needle */}
+          <path
+            d={`M ${cx} ${cy + R - 2} L ${cx - 2.5} ${cy + R - 10} L ${cx} ${cy + R - 8} L ${cx + 2.5} ${cy + R - 10} Z`}
+            fill="rgba(0,212,255,0.4)"
+          />
+
+          {/* Radar sweep (rotates independently — counter-rotated so it stays absolute) */}
+          <g transform={`rotate(${sweepAngle - roseRotation}, ${cx}, ${cy})`}>
+            <path
+              d={[
+                `M ${cx} ${cy}`,
+                `L ${(cx + (R - 4) * Math.cos(toRad(sweepAngle))).toFixed(2)} ${(cy + (R - 4) * Math.sin(toRad(sweepAngle))).toFixed(2)}`,
+                `A ${R - 4} ${R - 4} 0 0 1`,
+                `${(cx + (R - 4) * Math.cos(toRad(sweepAngle - 55))).toFixed(2)} ${(cy + (R - 4) * Math.sin(toRad(sweepAngle - 55))).toFixed(2)}`,
+                `Z`,
+              ].join(" ")}
+              fill="url(#compassSweep)" opacity="0.55"
+            />
+            <line
+              x1={cx} y1={cy}
+              x2={(cx + (R - 4) * Math.cos(toRad(sweepAngle))).toFixed(2)}
+              y2={(cy + (R - 4) * Math.sin(toRad(sweepAngle))).toFixed(2)}
+              stroke="#00d4ff" strokeWidth="0.9" opacity="0.8"
+            />
+          </g>
+
+          {/* Measurement bearing needle — amber, only when active */}
+          {measureMode && measureBearing !== null && (
+            <>
+              {/* Needle line */}
+              <line
+                x1={cx} y1={cy}
+                x2={(cx + (R - 3) * Math.cos(toRad(measureBearing))).toFixed(2)}
+                y2={(cy + (R - 3) * Math.sin(toRad(measureBearing))).toFixed(2)}
+                stroke="#facc15" strokeWidth="1.8" opacity="0.95"
+                strokeLinecap="round"
+              />
+              {/* Arrowhead at tip */}
+              <circle
+                cx={(cx + (R - 3) * Math.cos(toRad(measureBearing))).toFixed(2)}
+                cy={(cy + (R - 3) * Math.sin(toRad(measureBearing))).toFixed(2)}
+                r="2.8" fill="#facc15" opacity="0.95"
+                filter="url(#compassGlow)"
+              />
+              {/* Back tail */}
+              <line
+                x1={cx} y1={cy}
+                x2={(cx + (R * 0.3) * Math.cos(toRad(measureBearing + 180))).toFixed(2)}
+                y2={(cy + (R * 0.3) * Math.sin(toRad(measureBearing + 180))).toFixed(2)}
+                stroke="rgba(250,204,21,0.35)" strokeWidth="1.2"
+                strokeLinecap="round"
+              />
+            </>
+          )}
+        </g>
+
+        {/* ── Fixed center hub (doesn't rotate with rose) ── */}
+        <circle cx={cx} cy={cy} r={11}
+          fill="rgba(8,14,26,0.94)" stroke="rgba(0,212,255,0.28)" strokeWidth="0.9"/>
+        <text x={cx} y={cy + 1}
+          textAnchor="middle" dominantBaseline="middle"
+          fill="#00d4ff" fontSize="9"
+          fontFamily="'Share Tech Mono',monospace" fontWeight="bold"
+        >
           {entityCount}
         </text>
-        <text x={cx} y={cy + 12} textAnchor="middle" fill="rgba(0,212,255,0.5)" fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
-          TRK
-        </text>
+
+        {/* ── Fixed AIS count ── */}
         {aisCount > 0 && (
-          <text x={cx} y={cy + 22} textAnchor="middle" fill="rgba(34,211,238,0.7)" fontSize="5.5" fontFamily="'Share Tech Mono',monospace">
+          <text
+            x={cx} y={SIZE - 6}
+            textAnchor="middle"
+            fill="rgba(34,211,238,0.6)" fontSize="5.5"
+            fontFamily="'Share Tech Mono',monospace"
+          >
             AIS:{aisCount}
           </text>
         )}
-        <text x={cx} y={cy - r - 4} textAnchor="middle" fill="rgba(0,212,255,0.4)" fontSize="6" fontFamily="'Share Tech Mono',monospace" letterSpacing="1">
-          RADAR
-        </text>
+
+        {/* ── Measured bearing readout (fixed, top of widget) ── */}
+        {measureMode && measureBearing !== null ? (
+          <text x={cx} y={7}
+            textAnchor="middle"
+            fill="rgba(250,204,21,0.9)" fontSize="6.5"
+            fontFamily="'Share Tech Mono',monospace" fontWeight="bold"
+          >
+            {measureBearing.toFixed(1)}°T
+          </text>
+        ) : (
+          <text x={cx} y={7}
+            textAnchor="middle"
+            fill="rgba(0,212,255,0.3)" fontSize="5.5"
+            fontFamily="'Share Tech Mono',monospace" letterSpacing="1"
+          >
+            COMPASS
+          </text>
+        )}
       </svg>
     </div>
   );
@@ -1523,8 +1700,13 @@ export function MapView({
         />
       )}
 
-      {/* BR — Mini radar */}
-      <MiniRadar entityCount={entityCount} aisCount={aisVesselCount} />
+      {/* BR — Compass Rose */}
+      <CompassRose
+        entityCount={entityCount}
+        aisCount={aisVesselCount}
+        measureBearing={measureResult?.bearing ?? null}
+        measureMode={measureMode}
+      />
 
       {/* Planet error tooltip */}
       {planetError && (

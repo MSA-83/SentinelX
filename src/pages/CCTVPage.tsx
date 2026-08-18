@@ -571,7 +571,7 @@ function CameraView({
                 <span className="font-mono text-[7px] font-bold" style={{ color: "#ef4444" }}>MOTION</span>
               </div>
             )}
-            {/* Live indicator dot */}}
+            {/* Live indicator dot */}
             <div className="absolute top-2 right-2 flex items-center gap-1" style={{ zIndex: 2 }}>
               <div
                 className="w-1.5 h-1.5 rounded-full"

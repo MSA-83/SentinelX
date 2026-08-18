@@ -239,6 +239,17 @@
 .threat-ring { animation: threatRing 2s ease-out infinite; }
 .count-up    { animation: countUp 0.3s ease-out; }
 
+/* ══ Geofence breach pulse animation ════════════════════════════════════════ */
+@keyframes geofencePulse {
+  0%   { stroke-opacity: 1;   stroke-width: 2.5; }
+  50%  { stroke-opacity: 0.4; stroke-width: 4;   }
+  100% { stroke-opacity: 1;   stroke-width: 2.5; }
+}
+/* Applied to breached geofence SVG paths via Leaflet path element class */
+.leaflet-interactive.geofence-breach {
+  animation: geofencePulse 1.6s ease-in-out infinite;
+}
+
 /* Typewriter cursor */
 .typewriter-cursor::after {
   content: "█";

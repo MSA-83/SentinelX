@@ -16,6 +16,8 @@ import { StatusBar } from "@/components/features/StatusBar";
 import { CommandBar } from "@/components/features/CommandBar";
 import { AICopilot } from "@/components/features/AICopilot";
 import { ConjunctionAlertPanel } from "@/components/features/ConjunctionAlertPanel";
+import { useGeofences } from "@/hooks/useGeofences";
+import type { StreamEvent } from "@/types/entities";
 
 const DEFAULT_WORKSPACES: MissionWorkspace[] = [
   {
@@ -73,7 +75,8 @@ export function Dashboard() {
   } = useEntityStream();
 
   const liveFeeds = useLiveFeeds();
-  const aisStream = useAISStream(true);
+  const aisStream  = useAISStream(true);
+  const { geofences } = useGeofences();
 
   const outletCtx = useOutletContext<{ navCollapsed: boolean; toggleNav: () => void } | undefined>();
   const [selectedEntity,    setSelectedEntity]    = useState<SentinelEntity | null>(null);
@@ -87,6 +90,13 @@ export function Dashboard() {
   const [copilotOpen,           setCopilotOpen]           = useState(false);
   const [conjunctionPanelOpen,  setConjunctionPanelOpen]  = useState(false);
 
+  // Extra events slot for geofence breaches (useEntityStream doesn't expose addEvent)
+  const [extraEvents, setExtraEvents] = useState<StreamEvent[]>([]);
+
+  const handleGeofenceBreachReal = useCallback((event: StreamEvent) => {
+    setExtraEvents((prev) => [event, ...prev].slice(0, 40));
+  }, []);
+
   const enabledDomains = useMemo<Set<DomainKey>>(() => {
     const enabled = new Set<DomainKey>();
     for (const [domain, state] of Object.entries(layerStates)) {
@@ -96,6 +106,18 @@ export function Dashboard() {
   }, [layerStates]);
 
   // Merge mock entities with live OSINT entities (live data takes priority by ID)
+  // Merge breach events into the main event stream
+  const allEvents = useMemo(() => {
+    const combined = [...extraEvents, ...events];
+    // Deduplicate by ID
+    const seen = new Set<string>();
+    return combined.filter((e) => {
+      if (seen.has(e.id)) return false;
+      seen.add(e.id);
+      return true;
+    }).slice(0, 80);
+  }, [events, extraEvents]);
+
   const mergedEntities = useMemo(() => {
     const liveById = new Map(liveFeeds.entities.map((e) => [e.id, e]));
     // Keep mock entities that aren't overridden by live data
@@ -171,7 +193,7 @@ export function Dashboard() {
         copilotOpen={copilotOpen}
         onOpenConjunctionPanel={() => setConjunctionPanelOpen((v) => !v)}
         conjunctionPanelOpen={conjunctionPanelOpen}
-        events={events}
+        events={allEvents}
         onAcknowledgeEvent={acknowledgeEvent}
       />
 
@@ -198,11 +220,13 @@ export function Dashboard() {
             aisEntities={aisStream.entities}
             aisConnected={aisStream.connected}
             aisMessageCount={aisStream.messageCount}
+            geofences={geofences}
+            onGeofenceBreach={handleGeofenceBreachReal}
           />
         </div>
 
         <RightPanel
-          events={events}
+          events={allEvents}
           onAcknowledge={acknowledgeEvent}
           selectedEntity={selectedEntity}
           onClearSelection={handleClearSelection}

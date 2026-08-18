@@ -4,11 +4,16 @@
 // AIS vessel layer, and Planet Labs satellite imagery overlay.
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { Map as LeafletMap, TileLayer, LayerGroup, Marker, Polyline } from "leaflet";
-import type { SentinelEntity, DomainKey } from "@/types/entities";
+import type { Map as LeafletMap, TileLayer, LayerGroup, Marker, Polyline, Polygon } from "leaflet";
+import type { SentinelEntity, DomainKey, StreamEvent } from "@/types/entities";
 import { DOMAIN_CONFIGS, HOTSPOT_ZONES } from "@/constants/domains";
 import { severityToColor } from "@/lib/threatAssessor";
 import { supabase } from "@/lib/supabase";
+import {
+  type GeofenceRecord,
+  isInsideFence,
+  fenceClassificationColor,
+} from "@/hooks/useGeofences";
 
 export type MapOverlayMode = "normal" | "flir" | "nightvision";
 
@@ -24,6 +29,9 @@ interface MapViewProps {
   aisEntities?: SentinelEntity[];
   aisConnected?: boolean;
   aisMessageCount?: number;
+  // Geofence overlay props
+  geofences?: GeofenceRecord[];
+  onGeofenceBreach?: (event: StreamEvent) => void;
 }
 
 type MapMode = "dark" | "satellite" | "planet";
@@ -303,6 +311,8 @@ export function MapView({
   aisEntities = [],
   aisConnected = false,
   aisMessageCount = 0,
+  geofences = [],
+  onGeofenceBreach,
 }: MapViewProps) {
   const containerRef    = useRef<HTMLDivElement>(null);
   const mapRef          = useRef<LeafletMap | null>(null);
@@ -316,7 +326,10 @@ export function MapView({
   const trailsRef       = useRef<Map<string, Polyline>>(new Map());
   const LRef            = useRef<typeof import("leaflet") | null>(null);
   const clusterModeRef  = useRef(true);
-  const planetTokenRef  = useRef<string | null>(null);
+  const planetTokenRef    = useRef<string | null>(null);
+  const geofenceLayerRef  = useRef<LayerGroup | null>(null);
+  const geofencePolyRef   = useRef<Map<string, Polygon>>(new Map());
+  const breachCooldownRef = useRef<Map<string, number>>(new Map()); // fenceId:entityId → expiry ts
 
   const [mapMode,        setMapMode]        = useState<MapMode>("dark");
   const [leafletReady,   setLeafletReady]   = useState(false);
@@ -331,6 +344,8 @@ export function MapView({
   const [aisVesselCount, setAisVesselCount] = useState(0);
   const [radarActive,    setRadarActive]    = useState(false);
   const [radarLoading,   setRadarLoading]   = useState(false);
+  const [geofenceCount,  setGeofenceCount]  = useState(0);
+  const [breachCount,    setBreachCount]    = useState(0);
   const radarTileRef     = useRef<TileLayer | null>(null);
 
   const overlayLabel: Record<MapOverlayMode, string> = {
@@ -415,6 +430,9 @@ export function MapView({
     // AIS vessel layer (separate from clustered entities)
     aisLayerRef.current = L.layerGroup().addTo(map);
 
+    // Geofence overlay layer (below entity markers)
+    geofenceLayerRef.current = L.layerGroup().addTo(map);
+
     const makeClusterGroup = () => {
       const MCG = (L as any).markerClusterGroup;
       if (MCG) {
@@ -446,10 +464,11 @@ export function MapView({
     mapRef.current = map;
     return () => {
       map.remove();
-      mapRef.current     = null;
-      tileRef.current    = null;
-      clusterRef.current = null;
-      aisLayerRef.current= null;
+      mapRef.current          = null;
+      tileRef.current         = null;
+      clusterRef.current      = null;
+      aisLayerRef.current     = null;
+      geofenceLayerRef.current= null;
     };
   }, [leafletReady]);
 
@@ -580,7 +599,152 @@ export function MapView({
 
   useEffect(() => { clusterModeRef.current = clusterMode; }, [clusterMode]);
 
-  // Render / update entity markers
+  // ─── Render geofence polygons ────────────────────────────────────────────────
+  useEffect(() => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    const gl  = geofenceLayerRef.current;
+    if (!L || !map || !gl) return;
+
+    const fenceIds = new Set(geofences.map((f) => f.id));
+
+    // Remove polygons for fences no longer in list
+    for (const [id, poly] of geofencePolyRef.current) {
+      if (!fenceIds.has(id)) {
+        (gl as any).removeLayer(poly);
+        geofencePolyRef.current.delete(id);
+      }
+    }
+
+    // Add / update polygons
+    for (const fence of geofences) {
+      const classColor = fenceClassificationColor(fence.classification);
+      // Determine if any entity is breaching this fence right now
+      const allEntities = [...entities, ...aisEntities];
+      const isBreached = allEntities.some((e) => {
+        if (fence.trigger_domains.length > 0 && !fence.trigger_domains.includes(e.domain)) return false;
+        return isInsideFence(e.position.lat, e.position.lon, fence);
+      });
+
+      const fillOpacity = isBreached ? 0.18 : 0.07;
+      const weight      = isBreached ? 2.5  : 1.2;
+      const dashArray   = isBreached ? undefined : "8 5";
+
+      // Build Leaflet LatLngs
+      let latlngs: [number, number][];
+      if (fence.fence_type === "CIRCLE" && fence.coordinates[0]) {
+        // Approximate circle as 36-point polygon
+        const c   = fence.coordinates[0];
+        const r   = (fence.radius_km ?? 50) / 111.32; // deg approx
+        latlngs = Array.from({ length: 36 }, (_, i) => {
+          const a = (i * 10 * Math.PI) / 180;
+          return [c.lat + r * Math.cos(a), c.lon + r * Math.sin(a)] as [number, number];
+        });
+      } else {
+        latlngs = fence.coordinates.map((p) => [p.lat, p.lon] as [number, number]);
+      }
+
+      if (latlngs.length < 3) continue;
+
+      const existing = geofencePolyRef.current.get(fence.id);
+      if (existing) {
+        existing.setLatLngs(latlngs);
+        existing.setStyle({
+          color:       classColor,
+          fillColor:   classColor,
+          fillOpacity,
+          weight,
+          dashArray,
+          opacity: isBreached ? 1 : 0.7,
+        });
+        // Toggle pulse animation class on the underlying SVG path element
+        const el = (existing as any)._path as SVGPathElement | undefined;
+        if (el) {
+          if (isBreached) el.classList.add("geofence-breach");
+          else el.classList.remove("geofence-breach");
+        }
+      } else {
+        const poly = L.polygon(latlngs, {
+          color:       classColor,
+          fillColor:   classColor,
+          fillOpacity,
+          weight,
+          dashArray,
+          opacity: isBreached ? 1 : 0.7,
+          interactive: true,
+          className: isBreached ? "geofence-breach" : "",
+        });
+
+        // Tooltip with fence metadata
+        const ttipHtml = `
+          <div style="font-family:'Share Tech Mono',monospace;padding:2px">
+            <div style="color:${classColor};font-size:10px;font-weight:bold;margin-bottom:3px">${fence.name}</div>
+            <div style="color:#475569;font-size:8px">${fence.fence_type} // ${fence.classification.replace("_"," ")}</div>
+            ${fence.trigger_domains.length ? `<div style="color:#64748b;font-size:8px;margin-top:2px">DOMAINS: ${fence.trigger_domains.join(", ")}</div>` : ""}
+            ${isBreached ? `<div style="color:#ef4444;font-size:9px;margin-top:3px;font-weight:bold">⚠ ACTIVE BREACH DETECTED</div>` : ""}
+          </div>`;
+        poly.bindTooltip(ttipHtml, { sticky: true, className: "sx-popup", opacity: 0.95 });
+        poly.addTo(gl);
+        geofencePolyRef.current.set(fence.id, poly);
+      }
+    }
+
+    setGeofenceCount(geofences.length);
+  }, [geofences, entities, aisEntities]);
+
+  // ─── Breach detection → emit StreamEvents ────────────────────────────────────
+  useEffect(() => {
+    if (!onGeofenceBreach || geofences.length === 0) return;
+
+    const allEntities = [...entities, ...aisEntities];
+    let breachesThisCycle = 0;
+
+    for (const fence of geofences) {
+      for (const entity of allEntities) {
+        // Domain filter
+        if (
+          fence.trigger_domains.length > 0 &&
+          !fence.trigger_domains.includes(entity.domain)
+        ) continue;
+
+        const key = `${fence.id}:${entity.id}`;
+        const now = Date.now();
+
+        // Cooldown check (60s per fence+entity pair)
+        const expiry = breachCooldownRef.current.get(key);
+        if (expiry && now < expiry) continue;
+
+        if (isInsideFence(entity.position.lat, entity.position.lon, fence)) {
+          breachCooldownRef.current.set(key, now + 60_000);
+          breachesThisCycle++;
+
+          const classColor = fenceClassificationColor(fence.classification);
+          const eventId = `breach-${fence.id}-${entity.id}-${now}`;
+
+          onGeofenceBreach({
+            id:          eventId,
+            entityId:    entity.id,
+            domain:      entity.domain,
+            severity:    entity.severity === "CRITICAL" ? "CRITICAL" : "HIGH",
+            title:       `⚠ GEOFENCE BREACH: ${fence.name}`,
+            description: `${entity.label} (${entity.type.replace(/_/g, " ")}) entered restricted zone "${fence.name}" [${fence.classification.replace("_", " ")}]`,
+            ts:          new Date().toISOString(),
+            position:    entity.position,
+            acknowledged: false,
+          });
+
+          console.log(`[GeoFence] BREACH — ${entity.label} in ${fence.name} (${classColor})`);
+        }
+      }
+    }
+
+    if (breachesThisCycle > 0) {
+      setBreachCount((n) => n + breachesThisCycle);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entities, aisEntities, geofences]);
+
+  // ─── Render / update entity markers
   const renderEntities = useCallback(() => {
     const L      = LRef.current;
     const map    = mapRef.current;
@@ -775,6 +939,11 @@ export function MapView({
         {overlayMode !== "normal" && (
           <div className="font-mono font-bold" style={{ fontSize: 9, color: overlayMode === "flir" ? "#f97316" : "#10b981", letterSpacing: "0.12em" }}>
             ● {overlayLabel[overlayMode]}
+          </div>
+        )}
+        {geofenceCount > 0 && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(239,68,68,0.65)", letterSpacing: "0.1em" }}>
+            ◻ GEOFENCES: {geofenceCount} ACTIVE{breachCount > 0 ? ` // ${breachCount} BREACH${breachCount > 1 ? "ES" : ""}` : ""}
           </div>
         )}
         {planetActive && (

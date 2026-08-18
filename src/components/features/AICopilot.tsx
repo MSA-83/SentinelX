@@ -250,7 +250,8 @@ export function AICopilot({ entities, threatAssessment, onClose }: AICopilotProp
   const [loading, setLoading] = useState(false);
   const [briefLoading, setBriefLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"chat" | "analysis">("chat");
+  // tab state reserved for future tab UI
+  const [, setActiveTab] = useState<"chat" | "analysis">("chat");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 

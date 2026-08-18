@@ -7,7 +7,7 @@ import { computeThreatAssessment, severityToColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS, DOMAIN_ORDER } from "@/constants/domains";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, AreaChart, Area, RadarChart, Radar,
+  PieChart, Pie, Cell, RadarChart, Radar,
   PolarGrid, PolarAngleAxis, PolarRadiusAxis, ScatterChart, Scatter, ZAxis, Legend,
 } from "recharts";
 import { toast } from "sonner";

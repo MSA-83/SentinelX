@@ -27,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/analytics",  label: "Analytics",           shortLabel: "ANLYT", icon: "◱" },
   { path: "/exec",       label: "Executive Summary",   shortLabel: "EXEC",  icon: "★" },
   { path: "/workspaces", label: "Workspaces",          shortLabel: "WS",    icon: "⊟" },
+  { path: "/cctv",       label: "CCTV Monitor",        shortLabel: "CCTV",  icon: "📹" },
   { path: "/admin",      label: "Admin Console",       shortLabel: "ADMIN", icon: "⚙" },
 ];
 

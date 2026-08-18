@@ -344,15 +344,84 @@ export function MapView({
   const [aisVesselCount, setAisVesselCount] = useState(0);
   const [radarActive,    setRadarActive]    = useState(false);
   const [radarLoading,   setRadarLoading]   = useState(false);
+  const [heatActive,     setHeatActive]     = useState(false);
   const [geofenceCount,  setGeofenceCount]  = useState(0);
   const [breachCount,    setBreachCount]    = useState(0);
   const radarTileRef     = useRef<TileLayer | null>(null);
+  const heatLayerRef     = useRef<any>(null);
+  const aisProjectionsRef = useRef<Map<string, Polyline>>(new Map());
 
   const overlayLabel: Record<MapOverlayMode, string> = {
     normal: "",
     flir: "FLIR // THERMAL",
     nightvision: "NV // GEN-III",
   };
+
+  // Toggle threat density heatmap overlay
+  const toggleHeatmap = useCallback(async () => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+
+    if (heatActive) {
+      heatLayerRef.current?.remove();
+      heatLayerRef.current = null;
+      setHeatActive(false);
+      return;
+    }
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      await import(/* @vite-ignore */ "leaflet.heat");
+    } catch {
+      // leaflet.heat may not be installed — continue without it
+    }
+
+    const severityWeight: Record<string, number> = {
+      CRITICAL: 5, HIGH: 3, MEDIUM: 1, LOW: 0.4, INFO: 0.15,
+    };
+
+    const allEntities = [...entities, ...aisEntities];
+    const heatData = allEntities.map((e) => [
+      e.position.lat,
+      e.position.lon,
+      severityWeight[e.severity] ?? 0.5,
+    ] as [number, number, number]);
+
+    if (heatData.length === 0) return;
+
+    const HeatLayer = (L as any).heatLayer;
+    if (!HeatLayer) {
+      console.warn("[Heatmap] leaflet.heat not available");
+      return;
+    }
+
+    const layer = HeatLayer(heatData, {
+      radius: 32,
+      blur: 22,
+      maxZoom: 10,
+      max: 5,
+      gradient: { 0.0: "#10b981", 0.35: "#fde047", 0.65: "#f59e0b", 1.0: "#ef4444" },
+    });
+    layer.addTo(map);
+    heatLayerRef.current = layer;
+    setHeatActive(true);
+  }, [heatActive, entities, aisEntities]);
+
+  // Update heatmap data when entities change
+  useEffect(() => {
+    if (!heatActive || !heatLayerRef.current) return;
+    const severityWeight: Record<string, number> = {
+      CRITICAL: 5, HIGH: 3, MEDIUM: 1, LOW: 0.4, INFO: 0.15,
+    };
+    const allEntities = [...entities, ...aisEntities];
+    const heatData = allEntities.map((e) => [
+      e.position.lat,
+      e.position.lon,
+      severityWeight[e.severity] ?? 0.5,
+    ] as [number, number, number]);
+    heatLayerRef.current.setLatLngs(heatData);
+  }, [entities, aisEntities, heatActive]);
 
   // Toggle RainViewer precipitation radar overlay
   const toggleRadar = useCallback(async () => {
@@ -812,7 +881,19 @@ export function MapView({
     setEntityCount(visible.length);
   }, [entities, enabledDomains, selectedEntityId, showTrails, onEntitySelect]);
 
-  // Render AIS vessel markers
+  // Compute projected course point 30 minutes ahead
+  function projectPosition(
+    lat: number, lon: number, headingDeg: number, speedKnots: number, minutes: number
+  ): [number, number] {
+    const distNm = (speedKnots * minutes) / 60;
+    const distDeg = distNm / 60; // 1 degree lat ≈ 60 nm
+    const rad = (headingDeg * Math.PI) / 180;
+    const dLat = distDeg * Math.cos(rad);
+    const dLon = distDeg * Math.sin(rad) / Math.cos((lat * Math.PI) / 180);
+    return [lat + dLat, lon + dLon];
+  }
+
+  // Render AIS vessel markers + course projection polylines
   const renderAISVessels = useCallback(() => {
     const L        = LRef.current;
     const map      = mapRef.current;
@@ -820,18 +901,23 @@ export function MapView({
     if (!L || !map || !aisLayer) return;
 
     if (!showAISLayer) {
-      // Clear all AIS markers
+      // Clear all AIS markers and projections
       for (const marker of aisMarkersRef.current.values()) marker.remove();
       aisMarkersRef.current.clear();
+      for (const line of aisProjectionsRef.current.values()) line.remove();
+      aisProjectionsRef.current.clear();
       setAisVesselCount(0);
       return;
     }
 
     const visSet = new Set(aisEntities.map((e) => e.id));
 
-    // Remove stale AIS markers
+    // Remove stale AIS markers and projections
     for (const [id, marker] of aisMarkersRef.current) {
       if (!visSet.has(id)) { marker.remove(); aisMarkersRef.current.delete(id); }
+    }
+    for (const [id, line] of aisProjectionsRef.current) {
+      if (!visSet.has(id)) { line.remove(); aisProjectionsRef.current.delete(id); }
     }
 
     // Add/update AIS markers
@@ -851,6 +937,36 @@ export function MapView({
           .on("click", () => onEntitySelect(entity))
           .addTo(aisLayer);
         aisMarkersRef.current.set(entity.id, marker);
+      }
+
+      // Course projection line: vessels with speed > 0 get a 30-min projection
+      const speed = entity.speed ?? 0;
+      const heading = entity.heading ?? 0;
+      if (speed > 0) {
+        const projected = projectPosition(
+          entity.position.lat, entity.position.lon, heading, speed, 30
+        );
+        const pts: [number, number][] = [latlng, projected];
+        const existingLine = aisProjectionsRef.current.get(entity.id);
+        if (existingLine) {
+          existingLine.setLatLngs(pts);
+        } else {
+          const isMilitary = entity.type === "VESSEL_WARSHIP";
+          const isTanker   = entity.type === "VESSEL_TANKER";
+          const projColor  = isMilitary ? "rgba(239,68,68,0.55)" : isTanker ? "rgba(245,158,11,0.55)" : "rgba(34,211,238,0.55)";
+          const line = L.polyline(pts, {
+            color: projColor,
+            weight: 1.2,
+            opacity: 0.7,
+            dashArray: "5 5",
+            interactive: false,
+          }).addTo(aisLayer);
+          aisProjectionsRef.current.set(entity.id, line);
+        }
+      } else {
+        // Remove projection if vessel stopped
+        const line = aisProjectionsRef.current.get(entity.id);
+        if (line) { line.remove(); aisProjectionsRef.current.delete(entity.id); }
       }
     }
 
@@ -951,6 +1067,11 @@ export function MapView({
             ⊙ PLANET LABS IMAGERY ACTIVE
           </div>
         )}
+        {heatActive && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(239,68,68,0.65)", letterSpacing: "0.1em" }}>
+            🔥 THREAT HEATMAP ACTIVE // CRITICAL=RED
+          </div>
+        )}
         {radarActive && (
           <div className="font-mono" style={{ fontSize: 9, color: "rgba(99,179,237,0.75)", letterSpacing: "0.1em" }}>
             ⛈ PRECIP RADAR ACTIVE // RAINVIEWER
@@ -1007,6 +1128,23 @@ export function MapView({
           }}
         >
           {aisConnected ? (showAISLayer ? `⛵ AIS ${aisVesselCount}` : "⛵ AIS OFF") : "⛵ AIS —"}
+        </button>
+
+        {/* Threat Heatmap toggle */}
+        <button
+          onClick={toggleHeatmap}
+          style={{
+            background:     heatActive ? "rgba(239,68,68,0.15)" : "rgba(13,20,36,0.88)",
+            color:          heatActive ? "#ef4444" : "#475569",
+            border:         heatActive ? "1px solid rgba(239,68,68,0.35)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+          title="Toggle threat density heatmap (CRITICAL=red, LOW=green)"
+        >
+          {heatActive ? "🔥 HEAT ON" : "🔥 HEAT"}
         </button>
 
         {/* RainViewer Radar toggle */}

@@ -318,6 +318,314 @@ const MODULATION_COLORS: Record<string, string> = {
   OFDM: "#10b981", FSK: "#ec4899", AM: "#3b82f6", UNKNOWN: "#475569",
 };
 
+// ─── 100-500 MHz Live Spectrum Waterfall (VHF/UHF Focus) ──────────────────────
+
+const VHF_UHF_BANDS = [
+  { label: "VHF",  minMHz: 30,  maxMHz: 300, color: "rgba(0,212,255,0.12)",  textColor: "#22d3ee" },
+  { label: "UHF",  minMHz: 300, maxMHz: 1000, color: "rgba(168,85,247,0.10)", textColor: "#a855f7" },
+  { label: "SHF",  minMHz: 3000,maxMHz: 30000,color: "rgba(16,185,129,0.08)", textColor: "#10b981" },
+];
+
+function SpectrumWaterfall100_500({
+  emitters,
+}: {
+  emitters: EmitterRecord[];
+}) {
+  const FREQ_MIN = 100;
+  const FREQ_MAX = 500;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rowBufRef = useRef<Uint8ClampedArray[]>([]);
+  const animRef   = useRef<number>();
+  const lastFrameRef = useRef(0);
+  const FRAME_INTERVAL = 100;
+
+  // Filter sigint emitters in 100-500 MHz range or synthesize from entity positions
+  const relevantEmitters = useMemo(() => {
+    const inRange = emitters.filter((e) => e.frequency >= FREQ_MIN && e.frequency <= FREQ_MAX);
+    // Synthesize mock emitters from SIGINT entities if range is sparse
+    if (inRange.length < 3) {
+      const synth: EmitterRecord[] = [];
+      // Known tactical frequency allocation in VHF/UHF
+      const tacticalFreqs = [118, 156.8, 162, 243, 282, 406, 440, 460];
+      tacticalFreqs.forEach((f, i) => {
+        synth.push({
+          id:          `synth-${f}`,
+          label:       `EMISSION-${f}`,
+          frequency:   f,
+          bandwidth:   f < 200 ? 0.025 : f < 300 ? 0.125 : 1.0,
+          power:       -85 + Math.floor(Math.random() * 20),
+          modulation:  ["AM", "FM", "BPSK", "FSK"][i % 4],
+          emitterType: ["AERONAUTICAL","MARITIME","MILITARY","BROADCAST"][i % 4],
+          bearing:     Math.floor(Math.random() * 360),
+          severity:    f === 243 || f === 406 ? "HIGH" : "LOW",
+          confidence:  0.72,
+          lat:         0,
+          lon:         0,
+          ts:          new Date().toISOString(),
+        });
+      });
+      return [...inRange, ...synth];
+    }
+    return inRange;
+  }, [emitters]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const W = canvas.width;
+    const H = canvas.height - 20; // reserve bottom for band labels
+    const freqSpan = FREQ_MAX - FREQ_MIN;
+
+    const addRow = (ts: number) => {
+      if (ts - lastFrameRef.current < FRAME_INTERVAL) return;
+      lastFrameRef.current = ts;
+
+      const rowData = new Uint8ClampedArray(W * 4);
+      // Noise floor
+      for (let x = 0; x < W; x++) {
+        const n = Math.random() * 10 + 2;
+        rowData[x * 4]     = n * 0.2;
+        rowData[x * 4 + 1] = n * 0.4;
+        rowData[x * 4 + 2] = n * 1.6;
+        rowData[x * 4 + 3] = 255;
+      }
+
+      for (const em of relevantEmitters) {
+        if (em.frequency < FREQ_MIN || em.frequency > FREQ_MAX) continue;
+        const fx = Math.floor(((em.frequency - FREQ_MIN) / freqSpan) * W);
+        const bwPx = Math.max(2, Math.floor((em.bandwidth / freqSpan) * W * 0.5));
+        const intensity = Math.max(0, em.power + 110) *
+          (em.severity === "CRITICAL" ? 3 : em.severity === "HIGH" ? 2 : 1.2);
+
+        for (let dx = -bwPx * 2; dx <= bwPx * 2; dx++) {
+          const x = fx + dx;
+          if (x < 0 || x >= W) continue;
+          const g = Math.exp(-(dx * dx) / (bwPx * bwPx * 0.5));
+          const str = intensity * g + Math.random() * 3;
+          const idx = x * 4;
+          if (em.severity === "CRITICAL") {
+            rowData[idx]     = Math.min(255, rowData[idx]     + str * 3);
+            rowData[idx + 1] = Math.min(255, rowData[idx + 1] + str * 0.3);
+            rowData[idx + 2] = Math.min(255, rowData[idx + 2] + str * 0.1);
+          } else if (em.severity === "HIGH") {
+            rowData[idx]     = Math.min(255, rowData[idx]     + str * 2);
+            rowData[idx + 1] = Math.min(255, rowData[idx + 1] + str * 1.2);
+            rowData[idx + 2] = Math.min(255, rowData[idx + 2] + str * 0.1);
+          } else {
+            rowData[idx]     = Math.min(255, rowData[idx]     + str * 0.1);
+            rowData[idx + 1] = Math.min(255, rowData[idx + 1] + str * 1.0);
+            rowData[idx + 2] = Math.min(255, rowData[idx + 2] + str * 2.5);
+          }
+        }
+      }
+
+      rowBufRef.current.push(rowData);
+      if (rowBufRef.current.length > H) rowBufRef.current.shift();
+    };
+
+    const draw = (ts: number) => {
+      addRow(ts);
+
+      // Black background
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, W, canvas.height);
+
+      // Band background fills
+      const bandDefs = [
+        { min: 100, max: 300, color: "rgba(0,212,255,0.04)",  label: "VHF",  labelColor: "#22d3ee" },
+        { min: 300, max: 500, color: "rgba(168,85,247,0.05)", label: "UHF",  labelColor: "#a855f7" },
+      ];
+      for (const band of bandDefs) {
+        const x1 = ((band.min - FREQ_MIN) / freqSpan) * W;
+        const x2 = ((band.max - FREQ_MIN) / freqSpan) * W;
+        ctx.fillStyle = band.color;
+        ctx.fillRect(x1, 0, x2 - x1, H);
+        // Band boundary line
+        if (band.min > FREQ_MIN) {
+          ctx.strokeStyle = band.labelColor + "30";
+          ctx.lineWidth = 0.8;
+          ctx.setLineDash([3, 4]);
+          ctx.beginPath();
+          ctx.moveTo(x1, 0);
+          ctx.lineTo(x1, H);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // Waterfall rows
+      const rows = rowBufRef.current;
+      for (let i = 0; i < rows.length; i++) {
+        const y = H - 1 - i;
+        if (y < 0) break;
+        const imgData = ctx.createImageData(W, 1);
+        imgData.data.set(rows[rows.length - 1 - i]);
+        ctx.putImageData(imgData, 0, y);
+      }
+
+      // Frequency tick marks + emitter labels
+      const tickFreqs = [100, 121.5, 156.8, 162, 243, 300, 406, 500];
+      for (const freq of tickFreqs) {
+        if (freq < FREQ_MIN || freq > FREQ_MAX) continue;
+        const x = ((freq - FREQ_MIN) / freqSpan) * W;
+        ctx.strokeStyle = "rgba(0,212,255,0.2)";
+        ctx.lineWidth = 0.5;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        ctx.fillStyle = "rgba(0,212,255,0.45)";
+        ctx.font = "7px 'Share Tech Mono', monospace";
+        ctx.fillText(`${freq}`, Math.min(W - 26, x + 2), H - 3);
+      }
+
+      // Emitter spikes (highlighted)
+      for (const em of relevantEmitters) {
+        if (em.frequency < FREQ_MIN || em.frequency > FREQ_MAX) continue;
+        const x = ((em.frequency - FREQ_MIN) / freqSpan) * W;
+        const color = em.severity === "CRITICAL" ? "#ef4444" :
+                      em.severity === "HIGH"     ? "#f59e0b" : "#22d3ee";
+        // Spike marker at bottom
+        ctx.fillStyle = color;
+        ctx.fillRect(x - 1, H - 4, 2, 4);
+        ctx.fillStyle = color + "cc";
+        ctx.font = `bold 8px 'Share Tech Mono', monospace`;
+        const lx = Math.min(W - 40, Math.max(2, x - 12));
+        ctx.fillText(em.modulation, lx, H - 6);
+      }
+
+      // ─── Bottom band label strip ─────────────────────────────────────────
+      ctx.fillStyle = "#080e1a";
+      ctx.fillRect(0, H, W, 20);
+
+      const bottomBands = [
+        { label: "VHF (100-300 MHz)",   x: 0,       w: W * 0.5, color: "#22d3ee" },
+        { label: "UHF (300-500 MHz)",   x: W * 0.5, w: W * 0.5, color: "#a855f7" },
+      ];
+      for (const band of bottomBands) {
+        ctx.fillStyle = band.color + "18";
+        ctx.fillRect(band.x, H, band.w, 20);
+        ctx.fillStyle = band.color;
+        ctx.font = "bold 8px 'Share Tech Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(band.label, band.x + band.w / 2, H + 13);
+        ctx.textAlign = "left";
+      }
+      // Known allocation labels
+      const allocations = [
+        { freq: 121.5, label: "AVIATION EMRG",  color: "#f59e0b" },
+        { freq: 156.8, label: "MARITIME CH16",  color: "#22d3ee" },
+        { freq: 243,   label: "MIL EMRG",       color: "#ef4444" },
+        { freq: 406,   label: "EPIRB/COSPAR",   color: "#f59e0b" },
+      ];
+      ctx.font = "7px 'Share Tech Mono', monospace";
+      for (const a of allocations) {
+        if (a.freq < FREQ_MIN || a.freq > FREQ_MAX) continue;
+        const x = ((a.freq - FREQ_MIN) / freqSpan) * W;
+        ctx.fillStyle = a.color + "90";
+        ctx.fillText(a.label, Math.min(W - 56, x + 2), H + 9);
+      }
+
+      animRef.current = requestAnimationFrame(draw);
+    };
+
+    animRef.current = requestAnimationFrame(draw);
+    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
+  }, [relevantEmitters]);
+
+  const sigintCount = relevantEmitters.filter((e) => !e.id.startsWith("synth-")).length;
+  const critCount   = relevantEmitters.filter((e) => e.severity === "CRITICAL" || e.severity === "HIGH").length;
+
+  return (
+    <div
+      className="rounded border border-sx-border-dim overflow-hidden"
+      style={{ background: "#020617" }}
+    >
+      {/* Header */}
+      <div
+        className="px-3 py-1.5 flex items-center justify-between border-b border-sx-border-dim"
+        style={{ background: "#0d1424" }}
+      >
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[9px] font-bold tracking-widest text-sx-cyan">
+            LIVE SPECTRUM // 100–500 MHz
+          </span>
+          {[{ label: "VHF", color: "#22d3ee" }, { label: "UHF", color: "#a855f7" }].map(
+            ({ label, color }) => (
+              <span
+                key={label}
+                className="font-mono text-[7px] px-1.5 py-0.5 rounded"
+                style={{ color, background: `${color}12`, border: `1px solid ${color}30` }}
+              >
+                {label}
+              </span>
+            )
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {critCount > 0 && (
+            <span
+              className="font-mono text-[8px] px-1.5 py-0.5 rounded"
+              style={{
+                color: "#ef4444",
+                background: "rgba(239,68,68,0.1)",
+                border: "1px solid rgba(239,68,68,0.25)",
+                animation: "pulse 1.5s infinite",
+              }}
+            >
+              ⚡ {critCount} CRITICAL
+            </span>
+          )}
+          <span className="font-mono text-[8px] text-sx-text-muted">
+            {sigintCount} LIVE EMITTERS
+          </span>
+          <div
+            className="flex items-center gap-1"
+          >
+            <div
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ background: "#10b981", animation: "pulse 2s infinite", boxShadow: "0 0 4px #10b981" }}
+            />
+            <span className="font-mono text-[8px] text-sx-green">LIVE</span>
+          </div>
+        </div>
+      </div>
+      {/* Key frequency allocations */}
+      <div
+        className="px-3 py-1 flex items-center gap-4 border-b border-sx-border-dim flex-wrap"
+        style={{ background: "#080e1a" }}
+      >
+        {[
+          { freq: "121.5",  label: "AVIATION EMERGENCY",  color: "#f59e0b" },
+          { freq: "156.8",  label: "MARITIME CH16",       color: "#22d3ee" },
+          { freq: "162.0",  label: "NOAA WEATHER",        color: "#10b981" },
+          { freq: "243.0",  label: "MIL SAR EMERGENCY",   color: "#ef4444" },
+          { freq: "282.8",  label: "NATO TACTICAL",       color: "#a855f7" },
+          { freq: "406.0",  label: "EPIRB DISTRESS",      color: "#f59e0b" },
+        ].map(({ freq, label, color }) => (
+          <div key={freq} className="flex items-center gap-1">
+            <div className="w-2 h-1" style={{ background: color, opacity: 0.7 }} />
+            <span className="font-mono text-[7px]" style={{ color: color + "cc" }}>
+              {freq} MHz
+            </span>
+            <span className="font-mono text-[7px] text-sx-text-muted">{label}</span>
+          </div>
+        ))}
+      </div>
+      {/* Canvas */}
+      <div style={{ height: 180, position: "relative" }}>
+        <canvas
+          ref={canvasRef}
+          width={900}
+          height={180}
+          className="w-full h-full"
+          style={{ imageRendering: "pixelated", display: "block" }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ─── Band presets ─────────────────────────────────────────────────────────────
 
 const BAND_PRESETS = [
@@ -471,6 +779,11 @@ export function SigintPage() {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left: displays + table */}
         <div className="flex flex-col flex-1 min-w-0 overflow-hidden border-r border-sx-border">
+
+          {/* 100-500 MHz Live Spectrum Waterfall */}
+          <div className="flex-shrink-0 px-4 py-3">
+            <SpectrumWaterfall100_500 emitters={emitters} />
+          </div>
 
           {/* Power Spectrum */}
           <div

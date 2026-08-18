@@ -17,6 +17,7 @@ import { GeofencePage } from "@/pages/GeofencePage";
 import { KnowledgeGraphPage } from "@/pages/KnowledgeGraphPage";
 import { SigintPage } from "@/pages/SigintPage";
 import { OrbitalGlobePage } from "@/pages/OrbitalGlobePage";
+import { CCTVPage } from "@/pages/CCTVPage";
 import { NotFound } from "@/pages/NotFound";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -56,6 +57,7 @@ function AppRoutes() {
         <Route path="/sigint" element={<SigintPage />} />
         <Route path="/orbital" element={<OrbitalGlobePage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/cctv" element={<CCTVPage />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>

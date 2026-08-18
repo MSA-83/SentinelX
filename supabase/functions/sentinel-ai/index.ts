@@ -1,5 +1,5 @@
 // supabase/functions/sentinel-ai/index.ts
-// OnSpace AI edge function — intelligence analyst assistant + Groq quick-brief route
+// OnSpace AI edge function — intelligence analyst assistant + Groq quick-brief + deep analysis route
 import { corsHeaders } from "../_shared/cors.ts";
 
 Deno.serve(async (req: Request) => {
@@ -9,7 +9,8 @@ Deno.serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url);
-    const path = url.pathname.split("/").pop();
+    const pathParts = url.pathname.split("/").filter(Boolean);
+    const path = pathParts[pathParts.length - 1];
 
     // ─── Groq Quick-Brief route ────────────────────────────────────────────────
     if (path === "quick-brief") {
@@ -23,6 +24,7 @@ Deno.serve(async (req: Request) => {
         );
       }
 
+      const t0 = Date.now();
       const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -48,11 +50,12 @@ Deno.serve(async (req: Request) => {
           temperature: 0.3,
           stream: false,
         }),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (!groqRes.ok) {
         const errText = await groqRes.text();
-        console.error("Groq error:", groqRes.status, errText);
+        console.error("Groq quick-brief error:", groqRes.status, errText);
         return new Response(
           JSON.stringify({ error: `Groq: ${groqRes.status} ${errText}` }),
           { status: groqRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -61,9 +64,9 @@ Deno.serve(async (req: Request) => {
 
       const groqData = await groqRes.json();
       const content = groqData?.choices?.[0]?.message?.content ?? "No brief generated.";
-      const latencyMs = groqData?.usage?.total_time ? Math.round(groqData.usage.total_time * 1000) : null;
+      const latencyMs = Date.now() - t0;
 
-      console.log("Groq quick-brief generated. Tokens:", groqData?.usage?.total_tokens);
+      console.log("Groq quick-brief generated. Tokens:", groqData?.usage?.total_tokens, "Latency:", latencyMs + "ms");
 
       return new Response(
         JSON.stringify({
@@ -77,7 +80,117 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // ─── Default: OnSpace AI route ─────────────────────────────────────────────
+    // ─── Groq Deep Analysis route ──────────────────────────────────────────────
+    if (path === "deep-analysis") {
+      const groqKey = Deno.env.get("GROQ_API_KEY");
+      if (!groqKey) {
+        return new Response(
+          JSON.stringify({ error: "GROQ_API_KEY not configured" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const body = await req.json();
+      const { threatIndex, globalLevel, criticalCount, highCount, anomalyCount, crisisZones, domainSummary, topEntities } = body;
+
+      const systemPrompt = `You are SENTINEL-X AI — a NATO-grade strategic intelligence analyst with expertise in multi-domain threat assessment. You are preparing a classified analytical report for senior command. Your analysis must be:
+- Structured, professional, and precise
+- Grounded in the provided data
+- Written in NATO intelligence reporting style
+- Use military terminology (BLUF, COA, PIR, ISR, etc.)
+
+Output EXACTLY the following JSON structure with no markdown fencing:
+{
+  "bluf": "<1-2 sentence Bottom Line Up Front>",
+  "threatNarrative": "<3-4 sentence comprehensive threat situation assessment>",
+  "domainAnalysis": [
+    { "domain": "<domain>", "assessment": "<1-2 sentence specific analysis>", "keyIndicators": ["<indicator1>", "<indicator2>"] }
+  ],
+  "crossDomainCorrelations": ["<correlation1>", "<correlation2>", "<correlation3>"],
+  "anomalyAssessment": "<2-3 sentence analysis of flagged anomalies and their significance>",
+  "collectionPriorities": ["<PIR1>", "<PIR2>", "<PIR3>"],
+  "coa": [
+    { "action": "<action title>", "priority": "IMMEDIATE|URGENT|ROUTINE", "rationale": "<1 sentence>" }
+  ],
+  "confidence": "<HIGH|MEDIUM|LOW>",
+  "classification": "TOP SECRET // SENTINEL // NOFORN"
+}`;
+
+      const userContent = `CURRENT OPERATIONAL PICTURE:
+Threat Index: ${threatIndex}/100 | Global Level: ${globalLevel}
+Critical Entities: ${criticalCount} | High Priority: ${highCount} | Anomalies: ${anomalyCount}
+Active Crisis Zones: ${crisisZones?.join(", ") || "None"}
+
+DOMAIN THREAT SUMMARY:
+${domainSummary ?? "Not provided"}
+
+TOP ENTITIES OF INTEREST:
+${topEntities ?? "Not provided"}
+
+Generate a comprehensive strategic threat assessment.`;
+
+      const t0 = Date.now();
+      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userContent },
+          ],
+          max_tokens: 1200,
+          temperature: 0.35,
+          stream: false,
+          response_format: { type: "json_object" },
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+
+      if (!groqRes.ok) {
+        const errText = await groqRes.text();
+        console.error("Groq deep-analysis error:", groqRes.status, errText);
+        return new Response(
+          JSON.stringify({ error: `Groq: ${groqRes.status} ${errText}` }),
+          { status: groqRes.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const groqData = await groqRes.json();
+      const rawContent = groqData?.choices?.[0]?.message?.content ?? "{}";
+      const latencyMs = Date.now() - t0;
+
+      let analysis: Record<string, unknown> = {};
+      try {
+        analysis = JSON.parse(rawContent);
+      } catch {
+        // Attempt to extract JSON from the raw content
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try { analysis = JSON.parse(jsonMatch[0]); } catch { /**/ }
+        }
+        analysis = analysis ?? { bluf: rawContent, threatNarrative: "", domainAnalysis: [], crossDomainCorrelations: [], anomalyAssessment: "", collectionPriorities: [], coa: [], confidence: "LOW" };
+      }
+
+      console.log("Groq deep-analysis complete. Tokens:", groqData?.usage?.total_tokens, "Latency:", latencyMs + "ms");
+
+      return new Response(
+        JSON.stringify({
+          analysis,
+          model: "llama-3.3-70b-versatile",
+          provider: "groq",
+          latencyMs,
+          usage: groqData?.usage,
+          generatedAt: new Date().toISOString(),
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ─── Default: OnSpace AI chat route ───────────────────────────────────────
     const { messages, model = "gpt-4o-mini" } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
@@ -87,7 +200,6 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // OnSpace AI endpoint
     const onspaceAiBase = Deno.env.get("ONSPACE_AI_BASE_URL") ?? "https://ai.onspace.ai";
     const response = await fetch(`${onspaceAiBase}/v1/chat/completions`, {
       method: "POST",
@@ -101,6 +213,7 @@ Deno.serve(async (req: Request) => {
         max_tokens: 1024,
         temperature: 0.4,
       }),
+      signal: AbortSignal.timeout(30000),
     });
 
     if (!response.ok) {

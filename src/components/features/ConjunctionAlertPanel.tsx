@@ -78,16 +78,19 @@ function formatPc(pc: number): string {
 
 interface ConjunctionAlertPanelProps {
   onClose: () => void;
+  /** Called with a StreamEvent for each new CRITICAL conjunction (Pc > 1e-3). Deduplicated by CDM ID per session. */
+  onCriticalAlert?: (event: import("@/types/entities").StreamEvent) => void;
 }
 
-export function ConjunctionAlertPanel({ onClose }: ConjunctionAlertPanelProps) {
+export function ConjunctionAlertPanel({ onClose, onCriticalAlert }: ConjunctionAlertPanelProps) {
   const [state, setState] = useState<SpaceTrackState>({
     cdms: [], debris: [], loading: true, lastFetch: null, error: null, nextFetch: 0,
   });
   const [activeTab, setActiveTab] = useState<"cdm" | "debris" | "stats">("cdm");
   const [filter, setFilter] = useState<"ALL" | "HIGH_Pc" | "CRITICAL">("ALL");
   const [countdown, setCountdown] = useState(POLL_INTERVAL_MS / 1000);
-  const mountedRef = useRef(true);
+  const mountedRef    = useRef(true);
+  const emittedCdmIds = useRef<Set<string>>(new Set()); // deduplicate per session
 
   const fetchData = useCallback(async () => {
     if (!mountedRef.current) return;
@@ -180,6 +183,28 @@ export function ConjunctionAlertPanel({ onClose }: ConjunctionAlertPanelProps) {
           nextFetch: Date.now() + POLL_INTERVAL_MS,
         });
         setCountdown(POLL_INTERVAL_MS / 1000);
+
+        // Emit StreamEvents for new CRITICAL conjunctions (Pc > 1e-3)
+        if (onCriticalAlert) {
+          for (const cdm of cdms) {
+            if (cdm.probabilityOfCollision > 0.001 && !emittedCdmIds.current.has(cdm.id)) {
+              emittedCdmIds.current.add(cdm.id);
+              const color = SEV_COLOR[cdm.severity] ?? "#ef4444";
+              void color; // type-only use
+              onCriticalAlert({
+                id:          `cdm-${cdm.id}`,
+                entityId:    cdm.sat1NoradId,
+                domain:      "orbital" as import("@/types/entities").DomainKey,
+                severity:    "CRITICAL",
+                title:       `⚠ CONJUNCTION ALERT: ${cdm.sat1Name} × ${cdm.sat2Name}`,
+                description: `Pc ${(cdm.probabilityOfCollision * 100).toFixed(4)}% — Miss Dist: ${cdm.missDistanceKm.toFixed(2)} km — TCA: ${new Date(cdm.tcaUtc).toUTCString().split(" ")[4]}Z — NORADs: ${cdm.sat1NoradId} × ${cdm.sat2NoradId}`,
+                ts:          new Date().toISOString(),
+                position:    cdm.altitudeKm ? { lat: 0, lon: 0, alt: cdm.altitudeKm * 1000 } : undefined,
+                acknowledged: false,
+              });
+            }
+          }
+        }
       }
     } catch (err: unknown) {
       if (mountedRef.current) {

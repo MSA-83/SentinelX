@@ -269,7 +269,10 @@ export function Dashboard() {
       )}
 
       {conjunctionPanelOpen && (
-        <ConjunctionAlertPanel onClose={() => setConjunctionPanelOpen(false)} />
+        <ConjunctionAlertPanel
+          onClose={() => setConjunctionPanelOpen(false)}
+          onCriticalAlert={handleGeofenceBreachReal}
+        />
       )}
     </div>
   );

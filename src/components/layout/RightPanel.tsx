@@ -1,11 +1,13 @@
 // src/components/layout/RightPanel.tsx
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import type { StreamEvent, SentinelEntity, ThreatAssessment } from "@/types/entities";
 import { severityToColor, severityToBgColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS } from "@/constants/domains";
 import { SitrepPanel } from "@/components/features/SitrepPanel";
 import { AISVesselSidebar } from "@/components/features/AISVesselSidebar";
 import { AnomalyExplainer } from "@/components/features/AnomalyExplainer";
+import { alertsApi } from "@/lib/api/alerts";
+import { useAuth } from "@/hooks/useAuth";
 
 interface RightPanelProps {
   events: StreamEvent[];
@@ -26,11 +28,17 @@ export function RightPanel({
   entities,
   visible,
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<"events" | "entity" | "intel" | "sitrep">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "entity" | "intel" | "sitrep" | "breach">("events");
 
   // AIS vessels have isLive + mmsi in meta — show dedicated sidebar
   const isAISEntity = selectedEntity?.meta?.isLive === true && selectedEntity?.meta?.mmsi != null;
   const currentTab  = selectedEntity ? "entity" : activeTab;
+
+  // Breach log: geofence breach events (prefix 'breach-') + CDM events (prefix 'cdm-')
+  const breachEvents = events.filter(
+    (e) => e.id.startsWith("breach-") || e.id.startsWith("cdm-")
+  );
+  const unreadBreachCount = breachEvents.filter((e) => !e.acknowledged).length;
 
   if (!visible) return null;
 
@@ -41,8 +49,8 @@ export function RightPanel({
     >
       {/* Panel header tabs */}
       <div className="border-b border-sx-border px-2 py-2 flex items-center gap-0.5">
-        {(["events", "entity", "intel", "sitrep"] as const).map((tab) => {
-          const unreadCount = tab === "events" ? events.filter((e) => !e.acknowledged).length : 0;
+        {(["events", "entity", "intel", "sitrep", "breach"] as const).map((tab) => {
+          const unreadCount = tab === "events" ? events.filter((e) => !e.acknowledged).length : tab === "breach" ? unreadBreachCount : 0;
           return (
             <button
               key={tab}
@@ -56,7 +64,7 @@ export function RightPanel({
                   : "text-sx-text-muted hover:text-sx-text border border-transparent"
               }`}
             >
-              {tab === "events" ? "ALERTS" : tab === "entity" ? "ENTITY" : tab === "intel" ? "INTEL" : "SITREP"}
+              {tab === "events" ? "ALERTS" : tab === "entity" ? "ENTITY" : tab === "intel" ? "INTEL" : tab === "sitrep" ? "SITREP" : "BREACH"}
               {unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-sx-red text-white text-[8px] flex items-center justify-center font-bold">
                   {unreadCount > 9 ? "9+" : unreadCount}
@@ -82,6 +90,9 @@ export function RightPanel({
         )}
         {currentTab === "sitrep" && (
           <SitrepPanel entities={entities} events={events} threatAssessment={threatAssessment} />
+        )}
+        {currentTab === "breach" && (
+          <BreachLogTab events={breachEvents} onAcknowledge={onAcknowledge} />
         )}
       </div>
     </div>
@@ -421,6 +432,244 @@ function IntelTab({ threatAssessment }: { threatAssessment: ThreatAssessment }) 
           This intelligence assessment is classified TOP SECRET // SENTINEL // NOFORN. Distribution
           restricted to personnel holding valid SCI clearances and signed NDA on file with SENTCOM.
           Unauthorized disclosure is a violation of 18 U.S.C. § 793.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Breach Log Tab ────────────────────────────────────────────────────────────
+
+function BreachLogTab({
+  events,
+  onAcknowledge,
+}: {
+  events: StreamEvent[];
+  onAcknowledge: (id: string) => void;
+}) {
+  const { user } = useAuth();
+  const persistedRef = useRef<Set<string>>(new Set());
+  const [ackLoading, setAckLoading] = useState<string | null>(null);
+  const [filter, setFilter] = useState<"ALL" | "GEOFENCE" | "CDM">("ALL");
+
+  const filtered = events.filter((e) => {
+    if (filter === "GEOFENCE") return e.id.startsWith("breach-");
+    if (filter === "CDM")      return e.id.startsWith("cdm-");
+    return true;
+  });
+
+  // Parse fence/object name from title
+  const parseFenceName = (title: string): string => {
+    // "⚠ GEOFENCE BREACH: ZONE NAME" → "ZONE NAME"
+    // "⚠ CONJUNCTION ALERT: SAT1 × SAT2" → "SAT1 × SAT2"
+    const match = title.match(/:\s*(.+)$/);
+    return match?.[1] ?? title;
+  };
+
+  // Parse entity label from description
+  const parseEntityLabel = (desc: string): string => {
+    // "ENTITY_LABEL (TYPE) entered..." → "ENTITY_LABEL"
+    const match = desc.match(/^([^(]+)/);
+    return match?.[1]?.trim() ?? desc.slice(0, 30);
+  };
+
+  const handleAcknowledgeAndPersist = useCallback(
+    async (event: StreamEvent) => {
+      if (ackLoading) return;
+      setAckLoading(event.id);
+      try {
+        // Acknowledge in-memory
+        onAcknowledge(event.id);
+        // Persist to alerts_history (deduplicated)
+        if (user && !persistedRef.current.has(event.id)) {
+          persistedRef.current.add(event.id);
+          await alertsApi.persist(event);
+        }
+      } catch {
+        // silent
+      } finally {
+        setAckLoading(null);
+      }
+    },
+    [onAcknowledge, user, ackLoading]
+  );
+
+  const geofenceCount   = events.filter((e) => e.id.startsWith("breach-")).length;
+  const cdmCount        = events.filter((e) => e.id.startsWith("cdm-")).length;
+  const unackedCount    = events.filter((e) => !e.acknowledged).length;
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div
+        className="flex-shrink-0 px-3 py-2 border-b border-sx-border-dim"
+        style={{ background: "#080e1a" }}
+      >
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="font-mono text-[10px] text-sx-cyan tracking-widest font-bold">
+            BREACH & CONJUNCTION LOG
+          </span>
+          {unackedCount > 0 && (
+            <span
+              className="font-mono text-[8px] px-1.5 py-0.5 rounded"
+              style={{
+                background: "rgba(239,68,68,0.12)",
+                color: "#ef4444",
+                border: "1px solid rgba(239,68,68,0.25)",
+              }}
+            >
+              {unackedCount} UNACKED
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 mb-2">
+          {[
+            { label: "TOTAL",    value: events.length,  color: "#00d4ff" },
+            { label: "GEOFENCE", value: geofenceCount,  color: "#ef4444" },
+            { label: "CDM",      value: cdmCount,       color: "#f59e0b" },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="text-center">
+              <div className="font-mono text-sm font-bold leading-none" style={{ color }}>{value}</div>
+              <div className="font-mono text-[7px] text-sx-text-muted mt-0.5">{label}</div>
+            </div>
+          ))}
+        </div>
+        {/* Filter bar */}
+        <div className="flex gap-1">
+          {(["ALL", "GEOFENCE", "CDM"] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className="px-2 py-0.5 rounded font-mono text-[8px] uppercase transition-all"
+              style={{
+                background: filter === f ? "rgba(0,212,255,0.1)" : "transparent",
+                color:      filter === f ? "#00d4ff" : "#475569",
+                border:     `1px solid ${filter === f ? "rgba(0,212,255,0.25)" : "transparent"}`,
+              }}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Log list */}
+      <div className="flex-1 overflow-y-auto divide-y divide-sx-border-dim">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full p-8 text-center gap-3">
+            <div className="text-3xl opacity-20">{filter === "CDM" ? "🛰" : "◯"}</div>
+            <div className="font-mono text-[10px] text-sx-text-muted">
+              NO {filter === "ALL" ? "" : filter + " "}BREACH EVENTS
+            </div>
+            <div className="font-mono text-[9px] text-sx-text-muted/60">
+              {filter === "CDM"
+                ? "Open Conjunction Panel to trigger CDM alerts"
+                : "Geofence breaches appear here when entities enter active zones"}
+            </div>
+          </div>
+        ) : (
+          filtered.map((event) => {
+            const isCdm      = event.id.startsWith("cdm-");
+            const color      = event.severity === "CRITICAL" ? "#ef4444" : "#f59e0b";
+            const bgColor    = event.severity === "CRITICAL" ? "rgba(239,68,68,0.05)" : "rgba(245,158,11,0.04)";
+            const fenceName  = parseFenceName(event.title);
+            const entityLabel = parseEntityLabel(event.description);
+            const ts         = new Date(event.ts).toUTCString().split(" ")[4] + "Z";
+            const isAcked    = event.acknowledged;
+
+            return (
+              <div
+                key={event.id}
+                className="px-3 py-2.5 transition-all animate-fade-in"
+                style={{
+                  borderLeft: `2px solid ${isAcked ? "#1e3a5f" : color}`,
+                  background: isAcked ? "transparent" : bgColor,
+                  opacity:    isAcked ? 0.45 : 1,
+                }}
+              >
+                {/* Type badge + severity */}
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="font-mono text-[7px] px-1.5 py-0.5 rounded font-bold tracking-wider"
+                      style={{
+                        background: isCdm ? "rgba(245,158,11,0.1)" : "rgba(239,68,68,0.1)",
+                        color:      isCdm ? "#f59e0b" : "#ef4444",
+                        border:     `1px solid ${isCdm ? "rgba(245,158,11,0.25)" : "rgba(239,68,68,0.25)"}`,
+                      }}
+                    >
+                      {isCdm ? "🛰 CDM" : "◻ GEOFENCE"}
+                    </span>
+                    <span
+                      className="font-mono text-[7px] px-1 py-0.5 rounded"
+                      style={{
+                        color,
+                        background: `${color}10`,
+                        border:     `1px solid ${color}30`,
+                      }}
+                    >
+                      {event.severity}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[8px] text-sx-text-muted">{ts}</span>
+                </div>
+
+                {/* Zone / Object name */}
+                <div
+                  className="font-mono text-[11px] font-bold mb-0.5 truncate"
+                  style={{ color: isAcked ? "#475569" : color }}
+                  title={fenceName}
+                >
+                  {fenceName}
+                </div>
+
+                {/* Entity label */}
+                <div className="font-mono text-[9px] text-sx-text-muted mb-2 truncate">
+                  {isCdm ? (
+                    <span style={{ color: "#94a3b8" }}>{event.description.slice(0, 60)}…</span>
+                  ) : (
+                    <>
+                      <span style={{ color: "#cbd5e1" }}>{entityLabel}</span>
+                      <span style={{ color: "#475569" }}> entered restricted zone</span>
+                    </>
+                  )}
+                </div>
+
+                {/* Acknowledge + Persist button */}
+                {!isAcked && (
+                  <button
+                    onClick={() => handleAcknowledgeAndPersist(event)}
+                    disabled={ackLoading === event.id}
+                    className="w-full py-1 rounded font-mono text-[9px] font-bold uppercase tracking-wider transition-all"
+                    style={{
+                      background:  ackLoading === event.id ? "transparent" : "rgba(0,212,255,0.06)",
+                      border:      `1px solid ${ackLoading === event.id ? "#1e3a5f" : "rgba(0,212,255,0.2)"}`,
+                      color:       ackLoading === event.id ? "#334155" : "#00d4ff",
+                      cursor:      ackLoading === event.id ? "default" : "pointer",
+                    }}
+                  >
+                    {ackLoading === event.id ? "PERSISTING…" : "ACK + PERSIST TO DB"}
+                  </button>
+                )}
+                {isAcked && (
+                  <div className="font-mono text-[8px] text-sx-text-muted text-center">
+                    ✓ ACKNOWLEDGED
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Footer info */}
+      <div
+        className="flex-shrink-0 border-t border-sx-border px-3 py-2"
+        style={{ background: "#080e1a" }}
+      >
+        <div className="font-mono text-[8px] text-sx-text-muted text-center leading-relaxed">
+          ACK + PERSIST saves breach record to alerts_history DB.
+          CDM events from ConjunctionAlertPanel Pc &gt; 1×10⁻³.
         </div>
       </div>
     </div>

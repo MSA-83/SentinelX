@@ -1,6 +1,7 @@
 // src/pages/CCTVPage.tsx
 // CCTV & Security Monitoring — authenticated camera management, grid view,
-// stream proxy via edge function, role-based access, offline alerts, audit log
+// stream proxy via edge function, role-based access, offline alerts, audit log,
+// PTZ pan-tilt-zoom controls with preset positions.
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
@@ -19,10 +20,11 @@ interface CCTVCamera {
   nvr_info?: string;
   status: "online" | "offline" | "unknown";
   last_online?: string;
-  allowed_roles: string[];    // "OWNER" | "MANAGER" | "ANALYST"
+  allowed_roles: string[];
   thumbnail_url?: string;
   recording_status?: string;
   storage_used_gb?: number;
+  ptz_supported?: boolean;
   created_by?: string;
   created_at: string;
 }
@@ -37,7 +39,17 @@ interface AuditEntry {
   created_at: string;
 }
 
-type ViewMode = "grid" | "fullscreen";
+type PTZCommand =
+  | "pan_left" | "pan_right"
+  | "tilt_up"  | "tilt_down"
+  | "zoom_in"  | "zoom_out"
+  | "stop"     | "preset";
+
+interface PTZState {
+  pan: number;   // -100 to +100
+  tilt: number;  // -100 to +100
+  zoom: number;  //    1 to  10
+}
 
 const CAMERA_LOCATIONS = [
   "Warehouse Main Entrance",
@@ -57,29 +69,301 @@ const STATUS_CONFIG = {
 };
 
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  OWNER:    ["OWNER", "MANAGER", "ANALYST"],
-  ADMIN:    ["OWNER", "MANAGER", "ANALYST"],
-  MANAGER:  ["MANAGER"],
-  ANALYST:  [],
+  OWNER:   ["OWNER", "MANAGER", "ANALYST"],
+  ADMIN:   ["OWNER", "MANAGER", "ANALYST"],
+  MANAGER: ["MANAGER"],
+  ANALYST: [],
 };
+
+// PTZ presets
+const PTZ_PRESETS = [
+  { id: "home",      label: "HOME",      icon: "⌂", pan:   0, tilt:   0, zoom: 1 },
+  { id: "door",      label: "DOOR",      icon: "🚪", pan: -45, tilt: -10, zoom: 3 },
+  { id: "perimeter", label: "PERIMETER", icon: "◯", pan:  60, tilt:  15, zoom: 2 },
+  { id: "overview",  label: "OVERVIEW",  icon: "⊕", pan:   0, tilt:  20, zoom: 1 },
+] as const;
 
 // Simulate mock cameras for demo (replaced by real DB data when available)
 const MOCK_CAMERAS: CCTVCamera[] = CAMERA_LOCATIONS.map((loc, i) => ({
-  id:           `cam-${i + 1}`,
-  name:         `CAM-${String(i + 1).padStart(2, "0")} ${loc.split(" ")[0].toUpperCase()}`,
-  location:     loc,
-  camera_id:    `CAM${String(i + 1).padStart(3, "0")}`,
-  ip_address:   `192.168.1.${100 + i}`,
-  nvr_info:     `NVR-01 CH${i + 1}`,
-  status:       i === 2 ? "offline" : i === 5 ? "unknown" : "online",
-  last_online:  i === 2
+  id:             `cam-${i + 1}`,
+  name:           `CAM-${String(i + 1).padStart(2, "0")} ${loc.split(" ")[0].toUpperCase()}`,
+  location:       loc,
+  camera_id:      `CAM${String(i + 1).padStart(3, "0")}`,
+  ip_address:     `192.168.1.${100 + i}`,
+  nvr_info:       `NVR-01 CH${i + 1}`,
+  status:         i === 2 ? "offline" : i === 5 ? "unknown" : "online",
+  last_online:    i === 2
     ? new Date(Date.now() - 12 * 60000).toISOString()
     : new Date().toISOString(),
-  allowed_roles: ["OWNER", "MANAGER"],
+  allowed_roles:  ["OWNER", "MANAGER"],
   recording_status: i === 2 ? "STOPPED" : "RECORDING",
-  storage_used_gb:  Math.round(20 + Math.random() * 180),
-  created_at:   new Date().toISOString(),
+  storage_used_gb: Math.round(20 + Math.random() * 180),
+  ptz_supported:  i !== 2 && i !== 5, // offline/unknown cams don't support PTZ
+  created_at:     new Date().toISOString(),
 }));
+
+// ─── PTZ Control Panel ────────────────────────────────────────────────────────
+
+function PTZControls({
+  camera,
+  onCommand,
+}: {
+  camera: CCTVCamera;
+  onCommand: (cmd: PTZCommand, opts?: { presetId?: string; speed?: number }) => void;
+}) {
+  const [speed, setSpeed] = useState<1 | 2 | 3>(2);
+  const [activeCmd, setActiveCmd] = useState<PTZCommand | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setInterval>>();
+
+  const isOffline = camera.status === "offline";
+  const btnBase: React.CSSProperties = {
+    fontFamily: "'Share Tech Mono', monospace",
+    fontSize: 11,
+    borderRadius: 4,
+    cursor: isOffline ? "not-allowed" : "pointer",
+    transition: "all 0.12s",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    userSelect: "none",
+    opacity: isOffline ? 0.35 : 1,
+  };
+
+  const dirBtn = (cmd: PTZCommand, label: string, w = 36, h = 36): React.ReactNode => {
+    const isActive = activeCmd === cmd;
+    return (
+      <button
+        onMouseDown={() => {
+          if (isOffline) return;
+          setActiveCmd(cmd);
+          onCommand(cmd, { speed });
+          holdTimerRef.current = setInterval(() => onCommand(cmd, { speed }), 140);
+        }}
+        onMouseUp={() => {
+          clearInterval(holdTimerRef.current);
+          setActiveCmd(null);
+          onCommand("stop");
+        }}
+        onMouseLeave={() => {
+          if (activeCmd === cmd) {
+            clearInterval(holdTimerRef.current);
+            setActiveCmd(null);
+            onCommand("stop");
+          }
+        }}
+        onTouchStart={(e) => {
+          e.preventDefault();
+          if (isOffline) return;
+          setActiveCmd(cmd);
+          onCommand(cmd, { speed });
+          holdTimerRef.current = setInterval(() => onCommand(cmd, { speed }), 140);
+        }}
+        onTouchEnd={() => {
+          clearInterval(holdTimerRef.current);
+          setActiveCmd(null);
+          onCommand("stop");
+        }}
+        disabled={isOffline}
+        style={{
+          ...btnBase,
+          width: w,
+          height: h,
+          background: isActive
+            ? "rgba(0,212,255,0.25)"
+            : "rgba(0,212,255,0.07)",
+          border: `1px solid ${isActive ? "rgba(0,212,255,0.6)" : "rgba(0,212,255,0.2)"}`,
+          color: isActive ? "#00d4ff" : "#94a3b8",
+          boxShadow: isActive ? "0 0 8px rgba(0,212,255,0.3)" : "none",
+          fontSize: 14,
+        }}
+        title={cmd.replace("_", " ").toUpperCase()}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  return (
+    <div
+      className="rounded border overflow-hidden"
+      style={{ background: "#080e1a", borderColor: "rgba(0,212,255,0.15)" }}
+    >
+      {/* Header */}
+      <div
+        className="px-3 py-1.5 border-b flex items-center justify-between"
+        style={{ background: "#0d1424", borderColor: "rgba(0,212,255,0.12)" }}
+      >
+        <div className="flex items-center gap-2">
+          <span
+            className="font-mono text-[9px] font-bold tracking-widest"
+            style={{ color: isOffline ? "#475569" : "#00d4ff" }}
+          >
+            PTZ CONTROL
+          </span>
+          {camera.ptz_supported && !isOffline && (
+            <span
+              className="font-mono text-[7px] px-1.5 py-0.5 rounded"
+              style={{ color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)" }}
+            >
+              ONVIF
+            </span>
+          )}
+        </div>
+        {/* Speed selector */}
+        <div className="flex items-center gap-1">
+          <span className="font-mono text-[7px] text-sx-text-muted mr-0.5">SPD</span>
+          {([1, 2, 3] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setSpeed(s)}
+              disabled={isOffline}
+              style={{
+                ...btnBase,
+                width: 20,
+                height: 20,
+                fontSize: 8,
+                background:   speed === s ? "rgba(0,212,255,0.2)" : "transparent",
+                border:       `1px solid ${speed === s ? "rgba(0,212,255,0.4)" : "rgba(30,58,95,0.7)"}`,
+                color:        speed === s ? "#00d4ff" : "#475569",
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="p-3 space-y-3">
+        {/* ── D-pad + zoom column ─────────────────────────────────────────── */}
+        <div className="flex items-center gap-4 justify-center">
+          {/* D-pad */}
+          <div className="relative" style={{ width: 112, height: 112 }}>
+            {/* Tilt Up */}
+            <div className="absolute top-0 left-1/2 -translate-x-1/2">
+              {dirBtn("tilt_up", "▲")}
+            </div>
+            {/* Tilt Down */}
+            <div className="absolute bottom-0 left-1/2 -translate-x-1/2">
+              {dirBtn("tilt_down", "▼")}
+            </div>
+            {/* Pan Left */}
+            <div className="absolute left-0 top-1/2 -translate-y-1/2">
+              {dirBtn("pan_left", "◀")}
+            </div>
+            {/* Pan Right */}
+            <div className="absolute right-0 top-1/2 -translate-y-1/2">
+              {dirBtn("pan_right", "▶")}
+            </div>
+            {/* Center STOP button */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <button
+                onClick={() => !isOffline && onCommand("stop")}
+                disabled={isOffline}
+                style={{
+                  ...btnBase,
+                  width: 34,
+                  height: 34,
+                  background: "rgba(239,68,68,0.08)",
+                  border: "1px solid rgba(239,68,68,0.2)",
+                  color: "#ef4444",
+                  fontSize: 8,
+                  fontWeight: "bold",
+                  letterSpacing: "0.05em",
+                }}
+                title="Stop movement"
+              >
+                STOP
+              </button>
+            </div>
+          </div>
+
+          {/* Zoom column */}
+          <div className="flex flex-col items-center gap-1.5">
+            <span className="font-mono text-[7px] text-sx-text-muted tracking-widest">ZOOM</span>
+            {dirBtn("zoom_in", "＋", 32, 32)}
+            {/* Zoom level visual bar */}
+            <div
+              className="w-8 rounded-full overflow-hidden"
+              style={{ height: 44, background: "rgba(30,58,95,0.5)", border: "1px solid rgba(30,58,95,0.9)" }}
+            >
+              <div
+                className="w-full rounded-full transition-all duration-300"
+                style={{
+                  height: "40%",
+                  background: "linear-gradient(to top, #00d4ff, rgba(0,212,255,0.3))",
+                  marginTop: "auto",
+                  position: "relative",
+                  top: "60%",
+                  boxShadow: "0 0 4px rgba(0,212,255,0.4)",
+                }}
+              />
+            </div>
+            {dirBtn("zoom_out", "－", 32, 32)}
+          </div>
+        </div>
+
+        {/* ── Preset quick-access row ──────────────────────────────────────── */}
+        <div>
+          <div className="font-mono text-[7px] text-sx-text-muted tracking-widest mb-1.5 text-center">
+            PRESETS
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {PTZ_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                onClick={() => !isOffline && onCommand("preset", { presetId: preset.id })}
+                disabled={isOffline}
+                style={{
+                  ...btnBase,
+                  flexDirection: "column",
+                  gap: 2,
+                  paddingTop: 6,
+                  paddingBottom: 6,
+                  background: "rgba(0,212,255,0.05)",
+                  border: "1px solid rgba(0,212,255,0.15)",
+                  color: "#64748b",
+                  fontSize: 14,
+                  borderRadius: 4,
+                }}
+                className="hover:border-sx-cyan/40 hover:text-sx-cyan transition-all"
+                title={`Go to ${preset.label} preset`}
+              >
+                <span style={{ fontSize: 14 }}>{preset.icon}</span>
+                <span style={{ fontSize: 7, color: "#475569", fontFamily: "'Share Tech Mono',monospace", letterSpacing: "0.05em" }}>
+                  {preset.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Status row ────────────────────────────────────────────────────── */}
+        {isOffline ? (
+          <div
+            className="rounded px-2 py-1.5 text-center font-mono text-[8px]"
+            style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "#ef4444" }}
+          >
+            PTZ UNAVAILABLE — CAMERA OFFLINE
+          </div>
+        ) : !camera.ptz_supported ? (
+          <div
+            className="rounded px-2 py-1.5 text-center font-mono text-[8px]"
+            style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", color: "#f59e0b" }}
+          >
+            ⚠ PTZ NOT DETECTED — SENDING ONVIF COMMANDS
+          </div>
+        ) : (
+          <div
+            className="rounded px-2 py-1.5 text-center font-mono text-[8px]"
+            style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.15)", color: "#10b981" }}
+          >
+            ● PTZ READY — ONVIF PROFILE S
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ─── Camera Stream Proxy View ─────────────────────────────────────────────────
 
@@ -89,22 +373,23 @@ function CameraView({
   onFullscreen,
   onClose,
   onAuditLog,
+  ptzState,
 }: {
   camera: CCTVCamera;
   isFullscreen: boolean;
   onFullscreen: (cam: CCTVCamera) => void;
   onClose?: () => void;
   onAuditLog: (action: string, cameraId: string) => void;
+  ptzState?: PTZState;
 }) {
   const statusCfg = STATUS_CONFIG[camera.status];
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted]   = useState(true);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
     onAuditLog("VIEW_CAMERA", camera.id);
-    // Simulate stream load
     const t = setTimeout(() => {
       if (mountedRef.current) setLoading(false);
     }, 800 + Math.random() * 600);
@@ -115,6 +400,11 @@ function CameraView({
   }, [camera.id]);
 
   const bgColor = camera.status === "offline" ? "#0d0505" : "#020617";
+
+  // Compute simulated viewport offset from PTZ state
+  const panOffsetPct  = ((ptzState?.pan  ?? 0) / 100) * 12;
+  const tiltOffsetPct = ((ptzState?.tilt ?? 0) / 100) * 8;
+  const zoomScale     = 1 + ((ptzState?.zoom ?? 1) - 1) * 0.12;
 
   return (
     <div
@@ -146,7 +436,14 @@ function CameraView({
             </div>
           </div>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+            style={{
+              transform: `scale(${zoomScale}) translate(${panOffsetPct}%, ${-tiltOffsetPct}%)`,
+              transition: "transform 0.25s ease",
+              transformOrigin: "center center",
+            }}
+          >
             {/* Simulated camera feed — scanline grid */}
             <div
               className="absolute inset-0"
@@ -158,43 +455,41 @@ function CameraView({
                 backgroundSize: "20px 20px",
               }}
             />
-            <div className="absolute inset-0 pointer-events-none"
+            <div
+              className="absolute inset-0 pointer-events-none"
               style={{
                 background:
                   "repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,0.06) 3px,rgba(0,0,0,0.06) 4px)",
               }}
             />
             {/* Live indicator dot */}
-            <div
-              className="absolute top-2 right-2 flex items-center gap-1"
-              style={{ zIndex: 2 }}
-            >
+            <div className="absolute top-2 right-2 flex items-center gap-1" style={{ zIndex: 2 }}>
               <div
                 className="w-1.5 h-1.5 rounded-full"
-                style={{
-                  background: "#ef4444",
-                  boxShadow: "0 0 4px #ef4444",
-                  animation: "pulse 1.5s infinite",
-                }}
+                style={{ background: "#ef4444", boxShadow: "0 0 4px #ef4444", animation: "pulse 1.5s infinite" }}
               />
               <span className="font-mono text-[7px] text-white/60">REC</span>
             </div>
             {/* Mock subject silhouette */}
-            <svg
-              width="40" height="40" viewBox="0 0 40 40"
-              style={{ opacity: 0.08, zIndex: 1 }}
-            >
+            <svg width="40" height="40" viewBox="0 0 40 40" style={{ opacity: 0.08, zIndex: 1 }}>
               <circle cx="20" cy="12" r="8" fill="#00d4ff" />
               <path d="M6 40 Q6 26 20 26 Q34 26 34 40Z" fill="#00d4ff" />
             </svg>
-            {/* Timestamp overlay */}
+            {/* Timestamp + PTZ overlay */}
             <div
               className="absolute bottom-2 left-2 font-mono text-[7px]"
               style={{ color: "rgba(255,255,255,0.4)", zIndex: 2 }}
             >
-              {new Date().toUTCString().split(" ")[4]}Z&nbsp;
-              {camera.camera_id}
+              {new Date().toUTCString().split(" ")[4]}Z&nbsp;{camera.camera_id}
             </div>
+            {ptzState && (
+              <div
+                className="absolute bottom-2 right-2 font-mono text-[7px]"
+                style={{ color: "rgba(0,212,255,0.5)", zIndex: 2 }}
+              >
+                P:{ptzState.pan.toFixed(0)}° T:{ptzState.tilt.toFixed(0)}° Z:{ptzState.zoom.toFixed(1)}×
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -202,27 +497,21 @@ function CameraView({
       {/* Bottom info bar */}
       <div
         className="flex-shrink-0 flex items-center justify-between px-2 py-1.5 border-t"
-        style={{
-          background: "#0a0f1e",
-          borderColor: "rgba(30,58,95,0.7)",
-          minHeight: 32,
-        }}
+        style={{ background: "#0a0f1e", borderColor: "rgba(30,58,95,0.7)", minHeight: 32 }}
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span
-            className="font-mono text-[8px] flex-shrink-0"
-            style={{ color: statusCfg.color }}
-          >
+          <span className="font-mono text-[8px] flex-shrink-0" style={{ color: statusCfg.color }}>
             {statusCfg.icon}
           </span>
-          <span className="font-mono text-[9px] font-bold text-sx-text truncate">
-            {camera.name}
-          </span>
+          <span className="font-mono text-[9px] font-bold text-sx-text truncate">{camera.name}</span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {/* Mute toggle */}
           <button
-            onClick={() => { setMuted((v) => !v); onAuditLog(muted ? "UNMUTE_AUDIO" : "MUTE_AUDIO", camera.id); }}
+            onClick={() => {
+              setMuted((v) => !v);
+              onAuditLog(muted ? "UNMUTE_AUDIO" : "MUTE_AUDIO", camera.id);
+            }}
             className="w-5 h-5 rounded flex items-center justify-center transition-all"
             style={{
               background: muted ? "transparent" : "rgba(0,212,255,0.1)",
@@ -238,12 +527,7 @@ function CameraView({
           <button
             onClick={() => { onFullscreen(camera); onAuditLog("FULLSCREEN_CAMERA", camera.id); }}
             className="w-5 h-5 rounded flex items-center justify-center transition-all"
-            style={{
-              background: "transparent",
-              border: "1px solid rgba(30,58,95,0.7)",
-              color: "#475569",
-              fontSize: 9,
-            }}
+            style={{ background: "transparent", border: "1px solid rgba(30,58,95,0.7)", color: "#475569", fontSize: 9 }}
             title="Open fullscreen"
           >
             ⤢
@@ -266,7 +550,7 @@ function CameraView({
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export function CCTVPage() {
-  const { user } = useAuth();
+  const { user }  = useAuth();
   const [cameras, setCameras]             = useState<CCTVCamera[]>(MOCK_CAMERAS);
   const [fullscreenCam, setFullscreenCam] = useState<CCTVCamera | null>(null);
   const [activeTab, setActiveTab]         = useState<"monitor" | "manage" | "audit">("monitor");
@@ -274,11 +558,77 @@ export function CCTVPage() {
   const [newCam, setNewCam]               = useState({
     name: "", location: CAMERA_LOCATIONS[0], camera_id: "", ip_address: "", nvr_info: "",
   });
-  const [creating, setCreating]           = useState(false);
-  const statusIntervalRef                 = useRef<ReturnType<typeof setInterval>>();
+  const [creating, setCreating] = useState(false);
+  const statusIntervalRef       = useRef<ReturnType<typeof setInterval>>();
+  const ptzCooldownRef          = useRef(false);
+
+  // Per-camera PTZ state (pan/tilt/zoom simulation for the simulated feed)
+  const [ptzStates, setPtzStates] = useState<Record<string, PTZState>>(() =>
+    Object.fromEntries(MOCK_CAMERAS.map((c) => [c.id, { pan: 0, tilt: 0, zoom: 1 }]))
+  );
 
   const userRole: string = (user as any)?.role ?? "ANALYST";
   const canView = ROLE_PERMISSIONS[userRole]?.length > 0;
+
+  // ─── Send PTZ command to edge function + update local state ─────────────────
+  const sendPTZCommand = useCallback(
+    async (
+      camera: CCTVCamera,
+      cmd: PTZCommand,
+      opts: { presetId?: string; speed?: number } = {}
+    ) => {
+      // Apply local simulated movement
+      if (cmd !== "stop") {
+        setPtzStates((prev) => {
+          const cur = prev[camera.id] ?? { pan: 0, tilt: 0, zoom: 1 };
+          const spd = opts.speed ?? 2;
+          const delta = spd * 3;
+          let { pan, tilt, zoom } = cur;
+
+          if (cmd === "pan_left")  pan  = Math.max(-100, pan  - delta);
+          if (cmd === "pan_right") pan  = Math.min( 100, pan  + delta);
+          if (cmd === "tilt_up")   tilt = Math.min( 100, tilt + delta);
+          if (cmd === "tilt_down") tilt = Math.max(-100, tilt - delta);
+          if (cmd === "zoom_in")   zoom = Math.min(  10, zoom + 0.3 * spd);
+          if (cmd === "zoom_out")  zoom = Math.max(   1, zoom - 0.3 * spd);
+          if (cmd === "preset") {
+            const preset = PTZ_PRESETS.find((p) => p.id === opts.presetId);
+            if (preset) { pan = preset.pan; tilt = preset.tilt; zoom = preset.zoom; }
+          }
+
+          return { ...prev, [camera.id]: { pan, tilt, zoom } };
+        });
+      }
+
+      // Throttle edge function calls (max 1 per 200ms for hold-repeat)
+      if (ptzCooldownRef.current && cmd !== "preset" && cmd !== "stop") return;
+      ptzCooldownRef.current = true;
+      setTimeout(() => { ptzCooldownRef.current = false; }, 200);
+
+      // Fire-and-forget to edge function — camera proxy handles ONVIF translation
+      supabase.functions
+        .invoke("sentinel-feeds", {
+          body: {
+            action:     "ptz_command",
+            camera_id:  camera.camera_id,
+            ip_address: camera.ip_address,
+            command:    cmd,
+            speed:      opts.speed ?? 2,
+            preset_id:  opts.presetId,
+          },
+        })
+        .then(({ error }) => {
+          if (error) console.warn("[PTZ] Edge function error (non-fatal):", error.message);
+        });
+
+      // Audit specific PTZ actions
+      if (cmd === "preset" && opts.presetId) {
+        logAudit(`PTZ_PRESET_${opts.presetId.toUpperCase()}`, camera.id);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   // Offline alert system
   useEffect(() => {
@@ -312,7 +662,7 @@ export function CCTVPage() {
     async (action: string, cameraId: string) => {
       if (!user) return;
       const entry: AuditEntry = {
-        id:            `audit-${Date.now()}`,
+        id:            `audit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         user_id:       user.id,
         action,
         resource_type: "cctv_camera",
@@ -321,8 +671,6 @@ export function CCTVPage() {
         created_at:    new Date().toISOString(),
       };
       setAuditLog((prev) => [entry, ...prev].slice(0, 100));
-
-      // Persist to audit_logs table
       try {
         await supabase.from("audit_logs").insert({
           user_id:       user.id,
@@ -331,9 +679,7 @@ export function CCTVPage() {
           resource_id:   cameraId,
           details:       entry.details,
         });
-      } catch {
-        // silently skip if table not available
-      }
+      } catch { /* silently skip */ }
     },
     [user, userRole]
   );
@@ -353,10 +699,12 @@ export function CCTVPage() {
         allowed_roles:  ["OWNER", "MANAGER"],
         recording_status: "PENDING",
         storage_used_gb: 0,
+        ptz_supported:  true,
         created_by:     user.id,
         created_at:     new Date().toISOString(),
       };
       setCameras((prev) => [...prev, cam]);
+      setPtzStates((prev) => ({ ...prev, [cam.id]: { pan: 0, tilt: 0, zoom: 1 } }));
       setNewCam({ name: "", location: CAMERA_LOCATIONS[0], camera_id: "", ip_address: "", nvr_info: "" });
       toast.success(`Camera "${cam.name}" added`);
       logAudit("CREATE_CAMERA", cam.id);
@@ -409,24 +757,35 @@ export function CCTVPage() {
 
   return (
     <div className="flex flex-col h-full bg-sx-bg overflow-hidden">
-      {/* Fullscreen overlay */}
+
+      {/* ─── Fullscreen overlay ──────────────────────────────────────────────── */}
       {fullscreenCam && (
-        <div
-          className="fixed inset-0 z-[800] flex flex-col"
-          style={{ background: "#020617" }}
-        >
+        <div className="fixed inset-0 z-[800] flex flex-col" style={{ background: "#020617" }}>
+          {/* Fullscreen top bar */}
           <div
             className="flex-shrink-0 flex items-center justify-between px-4 py-2 border-b border-sx-border"
             style={{ background: "#0d1424" }}
           >
-            <div className="font-mono text-[11px] font-bold text-sx-cyan tracking-widest">
-              ⤢ FULLSCREEN — {fullscreenCam.name}
+            <div className="flex items-center gap-3">
+              <div className="font-mono text-[11px] font-bold text-sx-cyan tracking-widest">
+                ⤢ FULLSCREEN — {fullscreenCam.name}
+              </div>
+              <span className="font-mono text-[8px] text-sx-text-muted">{fullscreenCam.location}</span>
+              {fullscreenCam.ptz_supported && fullscreenCam.status !== "offline" && (
+                <span
+                  className="font-mono text-[7px] px-1.5 py-0.5 rounded"
+                  style={{
+                    color: "#10b981",
+                    background: "rgba(16,185,129,0.1)",
+                    border: "1px solid rgba(16,185,129,0.2)",
+                  }}
+                >
+                  PTZ ACTIVE
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3">
-              <span
-                className="font-mono text-[9px]"
-                style={{ color: STATUS_CONFIG[fullscreenCam.status].color }}
-              >
+              <span className="font-mono text-[9px]" style={{ color: STATUS_CONFIG[fullscreenCam.status].color }}>
                 {STATUS_CONFIG[fullscreenCam.status].icon} {STATUS_CONFIG[fullscreenCam.status].label}
               </span>
               <button
@@ -442,38 +801,151 @@ export function CCTVPage() {
               </button>
             </div>
           </div>
-          <div className="flex-1 p-4">
-            <CameraView
-              camera={fullscreenCam}
-              isFullscreen
-              onFullscreen={() => {}}
-              onClose={() => setFullscreenCam(null)}
-              onAuditLog={logAudit}
-            />
+
+          {/* Fullscreen body: feed + PTZ sidebar */}
+          <div className="flex flex-1 min-h-0 overflow-hidden">
+            {/* Camera feed — takes remaining width */}
+            <div className="flex-1 p-4 min-w-0">
+              <CameraView
+                camera={fullscreenCam}
+                isFullscreen
+                onFullscreen={() => {}}
+                onClose={() => setFullscreenCam(null)}
+                onAuditLog={logAudit}
+                ptzState={ptzStates[fullscreenCam.id]}
+              />
+            </div>
+
+            {/* PTZ sidebar */}
+            <div
+              className="w-64 flex-shrink-0 border-l border-sx-border flex flex-col overflow-y-auto p-3 gap-3"
+              style={{ background: "#0a0f1e" }}
+            >
+              {/* PTZ Controls */}
+              <PTZControls
+                camera={fullscreenCam}
+                onCommand={(cmd, opts) => sendPTZCommand(fullscreenCam, cmd, opts)}
+              />
+
+              {/* Current PTZ readout */}
+              <div
+                className="rounded border p-3 space-y-2"
+                style={{ background: "#080e1a", borderColor: "rgba(30,58,95,0.7)" }}
+              >
+                <div className="font-mono text-[8px] text-sx-text-muted tracking-widest">
+                  POSITION READOUT
+                </div>
+                {[
+                  {
+                    label: "PAN",
+                    value: `${(ptzStates[fullscreenCam.id]?.pan ?? 0).toFixed(0)}°`,
+                    color: "#00d4ff",
+                    pct:   ((ptzStates[fullscreenCam.id]?.pan ?? 0) + 100) / 2,
+                  },
+                  {
+                    label: "TILT",
+                    value: `${(ptzStates[fullscreenCam.id]?.tilt ?? 0).toFixed(0)}°`,
+                    color: "#a855f7",
+                    pct:   ((ptzStates[fullscreenCam.id]?.tilt ?? 0) + 100) / 2,
+                  },
+                  {
+                    label: "ZOOM",
+                    value: `${(ptzStates[fullscreenCam.id]?.zoom ?? 1).toFixed(1)}×`,
+                    color: "#10b981",
+                    pct:   ((ptzStates[fullscreenCam.id]?.zoom ?? 1) - 1) / 9 * 100,
+                  },
+                ].map(({ label, value, color, pct }) => (
+                  <div key={label}>
+                    <div className="flex justify-between mb-0.5">
+                      <span className="font-mono text-[8px] text-sx-text-muted">{label}</span>
+                      <span className="font-mono text-[9px] font-bold" style={{ color }}>{value}</span>
+                    </div>
+                    <div className="h-1 rounded-full overflow-hidden" style={{ background: "rgba(30,58,95,0.6)" }}>
+                      <div
+                        className="h-full rounded-full transition-all duration-200"
+                        style={{ width: `${pct}%`, background: color, boxShadow: `0 0 4px ${color}50` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Quick preset list */}
+              <div
+                className="rounded border p-3 space-y-2"
+                style={{ background: "#080e1a", borderColor: "rgba(30,58,95,0.7)" }}
+              >
+                <div className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-2">
+                  QUICK PRESETS
+                </div>
+                {PTZ_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    onClick={() => sendPTZCommand(fullscreenCam, "preset", { presetId: preset.id })}
+                    disabled={fullscreenCam.status === "offline"}
+                    className="w-full flex items-center gap-2 px-2 py-2 rounded transition-all"
+                    style={{
+                      background: "rgba(0,212,255,0.04)",
+                      border: "1px solid rgba(0,212,255,0.12)",
+                      opacity: fullscreenCam.status === "offline" ? 0.35 : 1,
+                      cursor:  fullscreenCam.status === "offline" ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 14 }}>{preset.icon}</span>
+                    <div className="text-left flex-1">
+                      <div className="font-mono text-[9px] font-bold text-sx-cyan">{preset.label}</div>
+                      <div className="font-mono text-[7px] text-sx-text-muted">
+                        P:{preset.pan}° T:{preset.tilt}° Z:{preset.zoom}×
+                      </div>
+                    </div>
+                    <span className="font-mono text-[8px] text-sx-text-muted">→</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Camera info card */}
+              <div
+                className="rounded border p-3 space-y-1.5"
+                style={{ background: "#080e1a", borderColor: "rgba(30,58,95,0.5)" }}
+              >
+                <div className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-1">
+                  CAMERA INFO
+                </div>
+                {[
+                  ["CAMERA ID",  fullscreenCam.camera_id],
+                  ["NVR/DVR",   fullscreenCam.nvr_info ?? "—"],
+                  ["IP ADDRESS", fullscreenCam.ip_address ?? "MASKED"],
+                  ["STATUS",     STATUS_CONFIG[fullscreenCam.status].label],
+                  ["PTZ",        fullscreenCam.ptz_supported ? "ONVIF PROFILE S" : "NOT SUPPORTED"],
+                ].map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[7px] text-sx-text-muted">{k}</span>
+                    <span className="font-mono text-[8px] text-sx-text truncate">{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div
-        className="flex-shrink-0 border-b border-sx-border px-6 py-3"
-        style={{ background: "#0d1424" }}
-      >
+      {/* ─── Header ────────────────────────────────────────────────────────────── */}
+      <div className="flex-shrink-0 border-b border-sx-border px-6 py-3" style={{ background: "#0d1424" }}>
         <div className="flex items-center justify-between">
           <div>
             <div className="font-display font-bold text-sx-cyan tracking-widest">
               CCTV SECURITY MONITOR
             </div>
             <div className="font-mono text-[9px] text-sx-text-muted">
-              AUTHENTICATED STREAM ACCESS // ROLE-BASED // AUDIT LOGGED
+              AUTHENTICATED STREAM ACCESS // PTZ CONTROL // ROLE-BASED // AUDIT LOGGED
             </div>
           </div>
           <div className="flex items-center gap-5">
             {[
-              { label: "ONLINE",   value: onlineCount,  color: "#10b981" },
-              { label: "OFFLINE",  value: offlineCount, color: "#ef4444" },
-              { label: "TOTAL",    value: cameras.length, color: "#00d4ff" },
-              { label: "STORAGE",  value: `${totalStorage} GB`, color: "#f59e0b" },
+              { label: "ONLINE",  value: onlineCount,    color: "#10b981" },
+              { label: "OFFLINE", value: offlineCount,   color: "#ef4444" },
+              { label: "TOTAL",   value: cameras.length, color: "#00d4ff" },
+              { label: "STORAGE", value: `${totalStorage} GB`, color: "#f59e0b" },
             ].map(({ label, value, color }) => (
               <div key={label} className="text-center">
                 <div className="font-mono text-lg font-bold" style={{ color }}>{value}</div>
@@ -482,10 +954,7 @@ export function CCTVPage() {
             ))}
             <div
               className="flex items-center gap-1.5 ml-2 px-3 py-1.5 rounded border"
-              style={{
-                background: "rgba(0,212,255,0.04)",
-                borderColor: "rgba(0,212,255,0.15)",
-              }}
+              style={{ background: "rgba(0,212,255,0.04)", borderColor: "rgba(0,212,255,0.15)" }}
             >
               <div
                 className="w-2 h-2 rounded-full"
@@ -502,10 +971,7 @@ export function CCTVPage() {
         {offlineCount > 0 && (
           <div
             className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded border"
-            style={{
-              background: "rgba(239,68,68,0.06)",
-              borderColor: "rgba(239,68,68,0.25)",
-            }}
+            style={{ background: "rgba(239,68,68,0.06)", borderColor: "rgba(239,68,68,0.25)" }}
           >
             <span className="font-mono text-[9px] font-bold text-sx-red tracking-wider">
               ⚠ CAMERA ALERT:
@@ -524,7 +990,7 @@ export function CCTVPage() {
         )}
       </div>
 
-      {/* Tabs */}
+      {/* ─── Tabs ──────────────────────────────────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex border-b border-sx-border px-4 py-2 gap-1"
         style={{ background: "#0a0f1e" }}
@@ -545,45 +1011,35 @@ export function CCTVPage() {
               : `AUDIT LOG (${auditLog.length})`}
           </button>
         ))}
-
-        {/* Classification banner */}
         <div className="ml-auto flex items-center gap-2">
           <span
             className="font-mono text-[8px] px-2 py-0.5 rounded"
-            style={{
-              color: "#10b981",
-              background: "rgba(16,185,129,0.08)",
-              border: "1px solid rgba(16,185,129,0.2)",
-            }}
+            style={{ color: "#10b981", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)" }}
           >
             🔒 END-TO-END ENCRYPTED
           </span>
           <span
             className="font-mono text-[8px] px-2 py-0.5 rounded"
-            style={{
-              color: "#f59e0b",
-              background: "rgba(245,158,11,0.08)",
-              border: "1px solid rgba(245,158,11,0.2)",
-            }}
+            style={{ color: "#f59e0b", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}
           >
             ROLE: {userRole}
           </span>
         </div>
       </div>
 
-      {/* Content */}
+      {/* ─── Content ───────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
 
-        {/* ─── MONITOR TAB ─────────────────────────────────────────────────── */}
+        {/* MONITOR TAB */}
         {activeTab === "monitor" && (
           <div className="p-4 space-y-4">
-            {/* Status row */}
+            {/* Status summary */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               {[
-                { label: "CAMERAS ONLINE",    value: `${onlineCount}/${cameras.length}`,  color: "#10b981", icon: "📷" },
-                { label: "RECORDING ACTIVE",  value: cameras.filter((c) => c.recording_status === "RECORDING").length, color: "#00d4ff", icon: "⏺" },
-                { label: "STORAGE USED",      value: `${totalStorage} GB`,               color: "#f59e0b", icon: "💾" },
-                { label: "OFFLINE ALERTS",    value: offlineCount,                        color: offlineCount > 0 ? "#ef4444" : "#10b981", icon: "⚠" },
+                { label: "CAMERAS ONLINE",   value: `${onlineCount}/${cameras.length}`,  color: "#10b981", icon: "📷" },
+                { label: "RECORDING ACTIVE", value: cameras.filter((c) => c.recording_status === "RECORDING").length, color: "#00d4ff", icon: "⏺" },
+                { label: "STORAGE USED",     value: `${totalStorage} GB`,                color: "#f59e0b", icon: "💾" },
+                { label: "OFFLINE ALERTS",   value: offlineCount,                         color: offlineCount > 0 ? "#ef4444" : "#10b981", icon: "⚠" },
               ].map(({ label, value, color, icon }) => (
                 <div
                   key={label}
@@ -608,6 +1064,7 @@ export function CCTVPage() {
                   isFullscreen={false}
                   onFullscreen={setFullscreenCam}
                   onAuditLog={logAudit}
+                  ptzState={ptzStates[cam.id]}
                 />
               ))}
             </div>
@@ -615,23 +1072,20 @@ export function CCTVPage() {
             {/* Security notice */}
             <div
               className="rounded border px-4 py-3"
-              style={{
-                background: "rgba(16,185,129,0.04)",
-                borderColor: "rgba(16,185,129,0.15)",
-              }}
+              style={{ background: "rgba(16,185,129,0.04)", borderColor: "rgba(16,185,129,0.15)" }}
             >
               <div className="font-mono text-[8px] text-sx-text-muted leading-relaxed">
                 <span style={{ color: "#10b981", fontWeight: "bold" }}>🔒 SECURITY NOTICE:</span>{" "}
-                Camera streams are proxied through the secure edge function. Stream URLs are never
-                exposed to the client. Access is authenticated via JWT and rate-limited per session.
-                All camera views are recorded in the audit log. Only OWNER and MANAGER roles can
-                access CCTV feeds. Accountant role has no CCTV access by default.
+                Camera streams are proxied through the secure edge function. Stream URLs and PTZ
+                credentials are never exposed to the client. PTZ commands are relayed via ONVIF
+                Profile S through the server-side proxy. All camera access and PTZ operations are
+                recorded in the audit log. Only OWNER and MANAGER roles can access CCTV feeds.
               </div>
             </div>
           </div>
         )}
 
-        {/* ─── MANAGE TAB ──────────────────────────────────────────────────── */}
+        {/* MANAGE TAB */}
         {activeTab === "manage" && (
           <div className="flex h-full min-h-0">
             {/* Camera list */}
@@ -646,37 +1100,34 @@ export function CCTVPage() {
                     key={cam.id}
                     className="rounded border px-4 py-3 flex items-start gap-4 transition-all"
                     style={{
-                      background: "#0d1424",
-                      borderColor: cam.status === "offline"
-                        ? "rgba(239,68,68,0.3)"
-                        : "rgba(30,58,95,0.7)",
-                      borderLeft: `3px solid ${statusCfg.color}`,
+                      background:  "#0d1424",
+                      borderColor: cam.status === "offline" ? "rgba(239,68,68,0.3)" : "rgba(30,58,95,0.7)",
+                      borderLeft:  `3px solid ${statusCfg.color}`,
                     }}
                   >
                     <div className="flex-1 min-w-0 space-y-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-mono text-[11px] font-bold text-sx-text">{cam.name}</span>
                         <span
                           className="font-mono text-[7px] px-1.5 py-0.5 rounded"
-                          style={{
-                            color: statusCfg.color,
-                            background: `${statusCfg.color}12`,
-                            border: `1px solid ${statusCfg.color}30`,
-                          }}
+                          style={{ color: statusCfg.color, background: `${statusCfg.color}12`, border: `1px solid ${statusCfg.color}30` }}
                         >
                           {statusCfg.icon} {statusCfg.label}
                         </span>
                         {cam.recording_status === "RECORDING" && (
                           <span
                             className="font-mono text-[7px] px-1.5 py-0.5 rounded"
-                            style={{
-                              color: "#ef4444",
-                              background: "rgba(239,68,68,0.1)",
-                              border: "1px solid rgba(239,68,68,0.25)",
-                              animation: "pulse 1.5s infinite",
-                            }}
+                            style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", animation: "pulse 1.5s infinite" }}
                           >
                             ⏺ REC
+                          </span>
+                        )}
+                        {cam.ptz_supported && cam.status !== "offline" && (
+                          <span
+                            className="font-mono text-[7px] px-1.5 py-0.5 rounded"
+                            style={{ color: "#00d4ff", background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)" }}
+                          >
+                            PTZ
                           </span>
                         )}
                       </div>
@@ -695,13 +1146,37 @@ export function CCTVPage() {
                           </div>
                         ))}
                       </div>
+
+                      {/* Inline PTZ preset quick-access */}
+                      {cam.ptz_supported && cam.status !== "offline" && (
+                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          <span className="font-mono text-[7px] text-sx-text-muted tracking-widest">PRESETS:</span>
+                          {PTZ_PRESETS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              onClick={() => sendPTZCommand(cam, "preset", { presetId: preset.id })}
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded transition-all"
+                              style={{
+                                background: "rgba(0,212,255,0.05)",
+                                border: "1px solid rgba(0,212,255,0.15)",
+                                color: "#94a3b8",
+                                fontFamily: "'Share Tech Mono',monospace",
+                                fontSize: 8,
+                                cursor: "pointer",
+                              }}
+                              title={`Move to ${preset.label} preset`}
+                            >
+                              <span style={{ fontSize: 10 }}>{preset.icon}</span>
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
                       <div className="flex gap-1 mt-1">
                         {cam.allowed_roles.map((r) => (
-                          <span
-                            key={r}
-                            className="font-mono text-[7px] px-1 py-0.5 rounded"
-                            style={{ color: "#64748b", background: "#080e1a", border: "1px solid #1e3a5f" }}
-                          >
+                          <span key={r} className="font-mono text-[7px] px-1 py-0.5 rounded"
+                            style={{ color: "#64748b", background: "#080e1a", border: "1px solid #1e3a5f" }}>
                             {r}
                           </span>
                         ))}
@@ -711,38 +1186,26 @@ export function CCTVPage() {
                       <button
                         onClick={() => handleRefreshStatus(cam.id)}
                         className="font-mono text-[8px] px-2 py-1 rounded transition-all"
-                        style={{
-                          background: "rgba(0,212,255,0.06)",
-                          border: "1px solid rgba(0,212,255,0.2)",
-                          color: "#00d4ff",
-                        }}
+                        style={{ background: "rgba(0,212,255,0.06)", border: "1px solid rgba(0,212,255,0.2)", color: "#00d4ff" }}
                       >
                         ↻ STATUS
                       </button>
                       <button
                         onClick={() => { setFullscreenCam(cam); setActiveTab("monitor"); }}
                         className="font-mono text-[8px] px-2 py-1 rounded transition-all"
-                        style={{
-                          background: "transparent",
-                          border: "1px solid rgba(30,58,95,0.7)",
-                          color: "#475569",
-                        }}
+                        style={{ background: "transparent", border: "1px solid rgba(30,58,95,0.7)", color: "#475569" }}
                       >
                         ⤢ VIEW
                       </button>
-                      {userRole === "OWNER" || userRole === "ADMIN" ? (
+                      {(userRole === "OWNER" || userRole === "ADMIN") && (
                         <button
                           onClick={() => handleDeleteCamera(cam.id)}
                           className="font-mono text-[8px] px-2 py-1 rounded transition-all"
-                          style={{
-                            background: "transparent",
-                            border: "1px solid rgba(239,68,68,0.2)",
-                            color: "#ef4444",
-                          }}
+                          style={{ background: "transparent", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}
                         >
                           ✕ REMOVE
                         </button>
-                      ) : null}
+                      )}
                     </div>
                   </div>
                 );
@@ -755,16 +1218,14 @@ export function CCTVPage() {
               style={{ background: "#0d1424" }}
             >
               <div className="flex-shrink-0 border-b border-sx-border px-4 py-3">
-                <div className="font-mono text-[10px] text-sx-text-muted tracking-widest">
-                  ADD NEW CAMERA
-                </div>
+                <div className="font-mono text-[10px] text-sx-text-muted tracking-widest">ADD NEW CAMERA</div>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
                 {[
-                  { label: "CAMERA NAME *",    key: "name",       placeholder: "CAM-01 ENTRANCE" },
-                  { label: "CAMERA ID *",       key: "camera_id",  placeholder: "CAM001" },
-                  { label: "IP ADDRESS",        key: "ip_address", placeholder: "192.168.1.100" },
-                  { label: "NVR/DVR INFO",      key: "nvr_info",   placeholder: "NVR-01 CH1" },
+                  { label: "CAMERA NAME *", key: "name",       placeholder: "CAM-01 ENTRANCE" },
+                  { label: "CAMERA ID *",    key: "camera_id",  placeholder: "CAM001" },
+                  { label: "IP ADDRESS",     key: "ip_address", placeholder: "192.168.1.100" },
+                  { label: "NVR/DVR INFO",   key: "nvr_info",   placeholder: "NVR-01 CH1" },
                 ].map(({ label, key, placeholder }) => (
                   <div key={key}>
                     <label className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-1 block">
@@ -779,11 +1240,8 @@ export function CCTVPage() {
                     />
                   </div>
                 ))}
-
                 <div>
-                  <label className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-1 block">
-                    LOCATION
-                  </label>
+                  <label className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-1 block">LOCATION</label>
                   <select
                     value={newCam.location}
                     onChange={(e) => setNewCam((p) => ({ ...p, location: e.target.value }))}
@@ -795,15 +1253,11 @@ export function CCTVPage() {
                     ))}
                   </select>
                 </div>
-
-                <div
-                  className="rounded border px-3 py-2.5"
-                  style={{ background: "rgba(16,185,129,0.04)", borderColor: "rgba(16,185,129,0.15)" }}
-                >
+                <div className="rounded border px-3 py-2.5"
+                  style={{ background: "rgba(16,185,129,0.04)", borderColor: "rgba(16,185,129,0.15)" }}>
                   <div className="font-mono text-[8px] text-sx-text-muted leading-relaxed">
-                    <span style={{ color: "#10b981" }}>🔒 SECURITY:</span> Stream URLs are stored
-                    server-side only and never transmitted to the browser. All access is proxied
-                    and encrypted via the edge function.
+                    <span style={{ color: "#10b981" }}>🔒 SECURITY:</span> Stream URLs and PTZ credentials
+                    are stored server-side only and never transmitted to the browser.
                   </div>
                 </div>
               </div>
@@ -826,7 +1280,7 @@ export function CCTVPage() {
           </div>
         )}
 
-        {/* ─── AUDIT TAB ───────────────────────────────────────────────────── */}
+        {/* AUDIT TAB */}
         {activeTab === "audit" && (
           <div className="p-4">
             <div className="font-mono text-[9px] text-sx-text-muted tracking-widest mb-3">
@@ -837,28 +1291,21 @@ export function CCTVPage() {
                 <div className="text-4xl opacity-20 mb-3">📋</div>
                 <div className="font-mono text-[10px] text-sx-text-muted">NO AUDIT EVENTS YET</div>
                 <div className="font-mono text-[9px] text-sx-text-muted/60 mt-1">
-                  Camera access events will appear here
+                  Camera access and PTZ events will appear here
                 </div>
               </div>
             ) : (
               <div className="space-y-1">
-                {/* Column headers */}
                 <div
                   className="grid px-3 py-1.5 font-mono text-[8px] text-sx-text-muted tracking-widest rounded"
-                  style={{
-                    gridTemplateColumns: "1fr 1.5fr 1fr 1fr",
-                    background: "#0a0f1e",
-                  }}
+                  style={{ gridTemplateColumns: "1fr 1.5fr 1fr 1fr", background: "#0a0f1e" }}
                 >
-                  {["TIMESTAMP", "ACTION", "CAMERA", "USER"].map((h) => (
-                    <span key={h}>{h}</span>
-                  ))}
+                  {["TIMESTAMP", "ACTION", "CAMERA", "USER"].map((h) => <span key={h}>{h}</span>)}
                 </div>
                 {auditLog.map((entry) => {
-                  const cam = cameras.find((c) => c.id === entry.resource_id);
-                  const isWrite =
-                    entry.action === "CREATE_CAMERA" ||
-                    entry.action === "DELETE_CAMERA";
+                  const cam     = cameras.find((c) => c.id === entry.resource_id);
+                  const isWrite = entry.action.startsWith("CREATE") || entry.action.startsWith("DELETE");
+                  const isPTZ   = entry.action.startsWith("PTZ");
                   return (
                     <div
                       key={entry.id}
@@ -866,10 +1313,8 @@ export function CCTVPage() {
                       style={{
                         gridTemplateColumns: "1fr 1.5fr 1fr 1fr",
                         background: "#0d1424",
-                        borderColor: isWrite
-                          ? "rgba(245,158,11,0.2)"
-                          : "rgba(30,58,95,0.4)",
-                        borderLeft: `2px solid ${isWrite ? "#f59e0b" : "#1e3a5f"}`,
+                        borderColor: isWrite ? "rgba(245,158,11,0.2)" : isPTZ ? "rgba(0,212,255,0.15)" : "rgba(30,58,95,0.4)",
+                        borderLeft: `2px solid ${isWrite ? "#f59e0b" : isPTZ ? "#00d4ff" : "#1e3a5f"}`,
                       }}
                     >
                       <span className="font-mono text-[8px] text-sx-text-muted">
@@ -877,7 +1322,7 @@ export function CCTVPage() {
                       </span>
                       <span
                         className="font-mono text-[9px] font-bold"
-                        style={{ color: isWrite ? "#f59e0b" : "#00d4ff" }}
+                        style={{ color: isWrite ? "#f59e0b" : isPTZ ? "#00d4ff" : "#94a3b8" }}
                       >
                         {entry.action}
                       </span>

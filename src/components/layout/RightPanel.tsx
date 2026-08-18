@@ -4,6 +4,8 @@ import type { StreamEvent, SentinelEntity, ThreatAssessment } from "@/types/enti
 import { severityToColor, severityToBgColor } from "@/lib/threatAssessor";
 import { DOMAIN_CONFIGS } from "@/constants/domains";
 import { SitrepPanel } from "@/components/features/SitrepPanel";
+import { AISVesselSidebar } from "@/components/features/AISVesselSidebar";
+import { AnomalyExplainer } from "@/components/features/AnomalyExplainer";
 
 interface RightPanelProps {
   events: StreamEvent[];
@@ -26,8 +28,9 @@ export function RightPanel({
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<"events" | "entity" | "intel" | "sitrep">("events");
 
-  // Auto-switch to entity tab when entity selected
-  const currentTab = selectedEntity ? "entity" : activeTab;
+  // AIS vessels have isLive + mmsi in meta — show dedicated sidebar
+  const isAISEntity = selectedEntity?.meta?.isLive === true && selectedEntity?.meta?.mmsi != null;
+  const currentTab  = selectedEntity ? "entity" : activeTab;
 
   if (!visible) return null;
 
@@ -70,7 +73,9 @@ export function RightPanel({
           <EventFeedTab events={events} onAcknowledge={onAcknowledge} />
         )}
         {currentTab === "entity" && (
-          <EntityDetailTab entity={selectedEntity} onClose={onClearSelection} />
+          isAISEntity && selectedEntity
+            ? <AISVesselSidebar entity={selectedEntity} onClose={onClearSelection} />
+            : <EntityDetailTab entity={selectedEntity} onClose={onClearSelection} />
         )}
         {currentTab === "intel" && (
           <IntelTab threatAssessment={threatAssessment} />
@@ -161,10 +166,7 @@ function EventItem({
       <div className="flex items-start justify-between gap-2 mb-1">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-xs flex-shrink-0">{config?.icon}</span>
-          <span
-            className="font-mono text-[10px] font-bold leading-tight"
-            style={{ color }}
-          >
+          <span className="font-mono text-[10px] font-bold leading-tight" style={{ color }}>
             {event.title}
           </span>
         </div>
@@ -218,24 +220,16 @@ function EntityDetailTab({
     );
   }
 
-  const config = DOMAIN_CONFIGS[entity.domain];
-  const color = severityToColor(entity.severity);
-
-  const formatCoord = (lat: number, lon: number) => {
-    const latStr = `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? "N" : "S"}`;
-    const lonStr = `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? "E" : "W"}`;
-    return `${latStr} ${lonStr}`;
-  };
-
+  const config     = DOMAIN_CONFIGS[entity.domain];
+  const color      = severityToColor(entity.severity);
+  const formatCoord = (lat: number, lon: number) =>
+    `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? "N" : "S"}  ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? "E" : "W"}`;
   const tsFormatted = new Date(entity.ts).toUTCString();
 
   return (
     <div className="p-3 space-y-3 animate-fade-in">
       {/* Entity header */}
-      <div
-        className="rounded p-3 border"
-        style={{ background: `${color}08`, borderColor: `${color}30` }}
-      >
+      <div className="rounded p-3 border" style={{ background: `${color}08`, borderColor: `${color}30` }}>
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="flex items-center gap-2">
             <span className="text-2xl">{config?.icon}</span>
@@ -264,6 +258,9 @@ function EntityDetailTab({
         </div>
       </div>
 
+      {/* AI Anomaly Explainer — only shown for anomaly-flagged entities */}
+      {entity.anomalyFlag && <AnomalyExplainer entity={entity} />}
+
       {/* Position & Kinematic data */}
       <DataSection title="POSITION & KINEMATICS">
         <DataRow label="COORDINATES" value={formatCoord(entity.position.lat, entity.position.lon)} />
@@ -283,18 +280,18 @@ function EntityDetailTab({
 
       {/* Intelligence */}
       <DataSection title="INTELLIGENCE">
-        <DataRow label="SOURCE" value={entity.source} />
+        <DataRow label="SOURCE"         value={entity.source} />
         <DataRow label="CLASSIFICATION" value={entity.classification.replace("_", " ")} />
-        <DataRow label="CONFIDENCE" value={`${(entity.confidence * 100).toFixed(0)}%`} />
-        <DataRow label="DOMAIN" value={config?.label ?? entity.domain} />
-        <DataRow label="TIMESTAMP" value={tsFormatted} mono />
+        <DataRow label="CONFIDENCE"     value={`${(entity.confidence * 100).toFixed(0)}%`} />
+        <DataRow label="DOMAIN"         value={config?.label ?? entity.domain} />
+        <DataRow label="TIMESTAMP"      value={tsFormatted} mono />
       </DataSection>
 
-      {/* Metadata */}
-      {Object.keys(entity.meta).length > 0 && (
+      {/* Metadata — hide isLive internal key */}
+      {Object.keys(entity.meta).filter((k) => k !== "isLive").length > 0 && (
         <DataSection title="METADATA">
           {Object.entries(entity.meta)
-            .filter(([, v]) => v !== undefined && v !== null)
+            .filter(([k, v]) => k !== "isLive" && v !== undefined && v !== null)
             .map(([key, value]) => (
               <DataRow
                 key={key}
@@ -374,7 +371,7 @@ function IntelTab({ threatAssessment }: { threatAssessment: ThreatAssessment }) 
         <div className="divide-y divide-sx-border-dim">
           {Object.entries(threatAssessment.domainThreatLevels ?? {}).map(([domain, level]) => {
             const config = DOMAIN_CONFIGS[domain as keyof typeof DOMAIN_CONFIGS];
-            const color = severityToColor(level as any);
+            const color  = severityToColor(level as any);
             return (
               <div key={domain} className="px-3 py-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">

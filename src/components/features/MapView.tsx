@@ -329,12 +329,55 @@ export function MapView({
   const [planetActive,   setPlanetActive]   = useState(false);
   const [planetError,    setPlanetError]    = useState<string | null>(null);
   const [aisVesselCount, setAisVesselCount] = useState(0);
+  const [radarActive,    setRadarActive]    = useState(false);
+  const [radarLoading,   setRadarLoading]   = useState(false);
+  const radarTileRef     = useRef<TileLayer | null>(null);
 
   const overlayLabel: Record<MapOverlayMode, string> = {
     normal: "",
     flir: "FLIR // THERMAL",
     nightvision: "NV // GEN-III",
   };
+
+  // Toggle RainViewer precipitation radar overlay
+  const toggleRadar = useCallback(async () => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+
+    if (radarActive) {
+      radarTileRef.current?.remove();
+      radarTileRef.current = null;
+      setRadarActive(false);
+      return;
+    }
+
+    setRadarLoading(true);
+    try {
+      const res = await fetch("https://api.rainviewer.com/public/weather-maps.json");
+      const json = await res.json();
+      // Get the latest radar frame path
+      const frames: { path: string; time: number }[] = json?.radar?.past ?? [];
+      if (!frames.length) throw new Error("No radar frames available");
+      const latest = frames[frames.length - 1];
+      const tileUrl = `https://tilecache.rainviewer.com${latest.path}/256/{z}/{x}/{y}/2/1_1.png`;
+      const layer = L.tileLayer(tileUrl, {
+        attribution: "&copy; <a href='https://rainviewer.com/'>RainViewer</a>",
+        opacity: 0.65,
+        maxZoom: 18,
+        tileSize: 256,
+        zIndex: 5,
+      });
+      layer.addTo(map);
+      radarTileRef.current = layer;
+      setRadarActive(true);
+      console.log("[Radar] RainViewer tile layer activated. Frame:", new Date(latest.time * 1000).toUTCString());
+    } catch (err: unknown) {
+      console.error("[Radar] Failed to load:", (err as Error).message);
+    } finally {
+      setRadarLoading(false);
+    }
+  }, [radarActive]);
 
   // Dynamic import of Leaflet
   useEffect(() => {
@@ -739,6 +782,11 @@ export function MapView({
             ⊙ PLANET LABS IMAGERY ACTIVE
           </div>
         )}
+        {radarActive && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(99,179,237,0.75)", letterSpacing: "0.1em" }}>
+            ⛈ PRECIP RADAR ACTIVE // RAINVIEWER
+          </div>
+        )}
       </div>
 
       {/* TR — Classification */}
@@ -790,6 +838,24 @@ export function MapView({
           }}
         >
           {aisConnected ? (showAISLayer ? `⛵ AIS ${aisVesselCount}` : "⛵ AIS OFF") : "⛵ AIS —"}
+        </button>
+
+        {/* RainViewer Radar toggle */}
+        <button
+          onClick={toggleRadar}
+          disabled={radarLoading}
+          style={{
+            background:     radarActive ? "rgba(99,179,237,0.15)" : "rgba(13,20,36,0.88)",
+            color:          radarLoading ? "#475569" : radarActive ? "#63b3ed" : "#475569",
+            border:         radarActive ? "1px solid rgba(99,179,237,0.35)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: radarLoading ? "default" : "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+          title="Toggle live precipitation radar (RainViewer)"
+        >
+          {radarLoading ? "⟳ RADAR…" : radarActive ? "⛈ RADAR ON" : "⛈ RADAR"}
         </button>
 
         {/* Planet Labs toggle */}

@@ -457,6 +457,34 @@ function BreachLogTab({
   const [caseLoading, setCaseLoading] = useState<string | null>(null);
   const [filter, setFilter] = useState<"ALL" | "GEOFENCE" | "CDM">("ALL");
 
+  const exportCSV = () => {
+    const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const header = ["Timestamp", "Type", "Zone / Object", "Entity", "Severity", "Acknowledged"].map(escape).join(",");
+    const rows = events.map((e) => {
+      const isCdm = e.id.startsWith("cdm-");
+      const zone  = parseFenceName(e.title);
+      const entity = isCdm
+        ? e.description.slice(0, 80).replace(/\n/g, " ")
+        : parseEntityLabel(e.description);
+      return [
+        new Date(e.ts).toUTCString(),
+        isCdm ? "CDM" : "GEOFENCE",
+        zone,
+        entity,
+        e.severity,
+        e.acknowledged ? "YES" : "NO",
+      ].map(escape).join(",");
+    });
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `sentinel_breach_log_${new Date().toISOString().slice(0,19).replace(/[T:]/g,"-")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const filtered = events.filter((e) => {
     if (filter === "GEOFENCE") return e.id.startsWith("breach-");
     if (filter === "CDM")      return e.id.startsWith("cdm-");
@@ -554,18 +582,34 @@ function BreachLogTab({
           <span className="font-mono text-[10px] text-sx-cyan tracking-widest font-bold">
             BREACH & CONJUNCTION LOG
           </span>
-          {unackedCount > 0 && (
-            <span
-              className="font-mono text-[8px] px-1.5 py-0.5 rounded"
+          <div className="flex items-center gap-1.5">
+            {unackedCount > 0 && (
+              <span
+                className="font-mono text-[8px] px-1.5 py-0.5 rounded"
+                style={{
+                  background: "rgba(239,68,68,0.12)",
+                  color: "#ef4444",
+                  border: "1px solid rgba(239,68,68,0.25)",
+                }}
+              >
+                {unackedCount} UNACKED
+              </span>
+            )}
+            <button
+              onClick={exportCSV}
+              disabled={events.length === 0}
+              title="Export breach log as CSV"
+              className="flex items-center gap-1 px-2 py-0.5 rounded font-mono text-[8px] font-bold uppercase transition-all"
               style={{
-                background: "rgba(239,68,68,0.12)",
-                color: "#ef4444",
-                border: "1px solid rgba(239,68,68,0.25)",
+                background:  events.length === 0 ? "transparent" : "rgba(16,185,129,0.08)",
+                border:      `1px solid ${events.length === 0 ? "rgba(30,58,95,0.4)" : "rgba(16,185,129,0.3)"}`,
+                color:       events.length === 0 ? "#334155" : "#10b981",
+                cursor:      events.length === 0 ? "not-allowed" : "pointer",
               }}
             >
-              {unackedCount} UNACKED
-            </span>
-          )}
+              ↓ CSV
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-3 mb-2">
           {[

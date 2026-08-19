@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -83,8 +84,8 @@ const PTZ_PRESETS = [
   { id: "overview",  label: "OVERVIEW",  icon: "⊕", pan:   0, tilt:  20, zoom: 1 },
 ] as const;
 
-// Simulate mock cameras for demo (replaced by real DB data when available)
-const MOCK_CAMERAS: CCTVCamera[] = CAMERA_LOCATIONS.map((loc, i) => ({
+// Fallback cameras if DB load fails
+const FALLBACK_CAMERAS: CCTVCamera[] = CAMERA_LOCATIONS.map((loc, i) => ({
   id:             `cam-${i + 1}`,
   name:           `CAM-${String(i + 1).padStart(2, "0")} ${loc.split(" ")[0].toUpperCase()}`,
   location:       loc,
@@ -98,7 +99,7 @@ const MOCK_CAMERAS: CCTVCamera[] = CAMERA_LOCATIONS.map((loc, i) => ({
   allowed_roles:  ["OWNER", "MANAGER"],
   recording_status: i === 2 ? "STOPPED" : "RECORDING",
   storage_used_gb: Math.round(20 + Math.random() * 180),
-  ptz_supported:  i !== 2 && i !== 5, // offline/unknown cams don't support PTZ
+  ptz_supported:  i !== 2 && i !== 5,
   created_at:     new Date().toISOString(),
 }));
 
@@ -660,7 +661,8 @@ function CameraView({
 
 export function CCTVPage() {
   const { user }  = useAuth();
-  const [cameras, setCameras]             = useState<CCTVCamera[]>(MOCK_CAMERAS);
+  const [cameras, setCameras]             = useState<CCTVCamera[]>([]);
+  const [dbLoading, setDbLoading]         = useState(true);
   const [fullscreenCam, setFullscreenCam] = useState<CCTVCamera | null>(null);
   const [activeTab, setActiveTab]         = useState<"monitor" | "manage" | "audit">("monitor");
   const [auditLog, setAuditLog]           = useState<AuditEntry[]>([]);
@@ -672,12 +674,92 @@ export function CCTVPage() {
   const statusIntervalRef       = useRef<ReturnType<typeof setInterval>>();
 
   const ptzCooldownRef          = useRef(false);
-  const [ptzStates, setPtzStates] = useState<Record<string, PTZState>>(() =>
-    Object.fromEntries(MOCK_CAMERAS.map((c) => [c.id, { pan: 0, tilt: 0, zoom: 1 }]))
-  );
+  const [ptzStates, setPtzStates] = useState<Record<string, PTZState>>({});
 
   const userRole: string = (user as any)?.role ?? "ANALYST";
   const canView = ROLE_PERMISSIONS[userRole]?.length > 0;
+
+  // ─── Load cameras from Supabase DB ─────────────────────────────────────────
+  const loadCamerasFromDB = useCallback(async () => {
+    setDbLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("cctv_cameras")
+        .select("*")
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        // Map DB rows to CCTVCamera shape
+        const mapped: CCTVCamera[] = data.map((row: Record<string, unknown>) => ({
+          id:               row.id as string,
+          name:             row.name as string,
+          location:         row.location as string,
+          camera_id:        row.camera_id as string,
+          ip_address:       row.ip_address as string | undefined,
+          nvr_info:         row.nvr_info as string | undefined,
+          status:           (row.status as CCTVCamera["status"]) ?? "unknown",
+          last_online:      row.last_online as string | undefined,
+          allowed_roles:    (row.allowed_roles as string[]) ?? ["OWNER", "MANAGER"],
+          recording_status: row.recording_status as string | undefined,
+          storage_used_gb:  row.storage_used_gb as number | undefined,
+          ptz_supported:    row.ptz_supported as boolean | undefined,
+          created_by:       row.created_by as string | undefined,
+          created_at:       row.created_at as string,
+        }));
+        setCameras(mapped);
+        // Init PTZ states for DB cameras
+        setPtzStates((prev) => {
+          const merged = { ...prev };
+          for (const cam of mapped) {
+            if (!(cam.id in merged)) merged[cam.id] = { pan: 0, tilt: 0, zoom: 1 };
+          }
+          return merged;
+        });
+        console.log(`[CCTV] Loaded ${mapped.length} cameras from DB`);
+      } else {
+        // No DB cameras yet — fall back to mock data
+        setCameras(FALLBACK_CAMERAS);
+        setPtzStates(Object.fromEntries(FALLBACK_CAMERAS.map((c) => [c.id, { pan: 0, tilt: 0, zoom: 1 }])));
+        console.log("[CCTV] No DB cameras found — using fallback data");
+      }
+    } catch (err) {
+      console.warn("[CCTV] DB load failed, using fallback:", err);
+      setCameras(FALLBACK_CAMERAS);
+      setPtzStates(Object.fromEntries(FALLBACK_CAMERAS.map((c) => [c.id, { pan: 0, tilt: 0, zoom: 1 }])));
+    } finally {
+      setDbLoading(false);
+    }
+  }, []);
+
+  // ─── Poll live status from edge function ───────────────────────────────────
+  const pollCameraStatus = useCallback(async (cameraList: CCTVCamera[]) => {
+    if (cameraList.length === 0) return;
+    try {
+      const { data, error } = await supabase.functions.invoke("sentinel-feeds", {
+        body: { action: "cctv_status", camera_ids: cameraList.map((c) => c.id) },
+      });
+      if (error) {
+        let msg = error.message;
+        if (error instanceof FunctionsHttpError) {
+          try { msg = await error.context?.text() ?? msg; } catch { /* ignore */ }
+        }
+        console.warn("[CCTV] Status poll error:", msg);
+        return;
+      }
+      const statuses: Record<string, { status: string; last_online: string }> = data?.statuses ?? {};
+      setCameras((prev) =>
+        prev.map((cam) => {
+          const s = statuses[cam.id];
+          if (!s) return cam;
+          return { ...cam, status: s.status as CCTVCamera["status"], last_online: s.last_online };
+        })
+      );
+    } catch (err) {
+      console.warn("[CCTV] Status poll failed:", err);
+    }
+  }, []);
 
   // ─── Send PTZ command to edge function + update local state ─────────────────
   const sendPTZCommand = useCallback(
@@ -739,6 +821,16 @@ export function CCTVPage() {
     []
   );
 
+  // Load cameras from DB on mount
+  useEffect(() => { loadCamerasFromDB(); }, [loadCamerasFromDB]);
+
+  // Poll camera status every 30s after cameras are loaded
+  useEffect(() => {
+    if (cameras.length === 0) return;
+    const interval = setInterval(() => pollCameraStatus(cameras), 30_000);
+    return () => clearInterval(interval);
+  }, [cameras.length, pollCameraStatus]);
+
   // Offline alert system
   useEffect(() => {
     const offlineCams = cameras.filter((c) => c.status === "offline");
@@ -797,55 +889,99 @@ export function CCTVPage() {
     if (!newCam.name.trim() || !user) return;
     setCreating(true);
     try {
-      const cam: CCTVCamera = {
-        id:             `cam-${Date.now()}`,
-        name:           newCam.name,
-        location:       newCam.location,
-        camera_id:      newCam.camera_id || `CAM${Date.now().toString().slice(-4)}`,
-        ip_address:     newCam.ip_address,
-        nvr_info:       newCam.nvr_info,
-        status:         "unknown",
-        allowed_roles:  ["OWNER", "MANAGER"],
+      const payload = {
+        name:             newCam.name,
+        location:         newCam.location,
+        camera_id:        newCam.camera_id || `CAM${Date.now().toString().slice(-4)}`,
+        ip_address:       newCam.ip_address || null,
+        nvr_info:         newCam.nvr_info || null,
+        status:           "unknown",
+        allowed_roles:    ["OWNER", "MANAGER"],
         recording_status: "PENDING",
-        storage_used_gb: 0,
-        ptz_supported:  true,
-        created_by:     user.id,
-        created_at:     new Date().toISOString(),
+        storage_used_gb:  0,
+        ptz_supported:    true,
+        created_by:       user.id,
       };
+      const { data: created, error } = await supabase
+        .from("cctv_cameras")
+        .insert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      const cam = created as CCTVCamera;
       setCameras((prev) => [...prev, cam]);
       setPtzStates((prev) => ({ ...prev, [cam.id]: { pan: 0, tilt: 0, zoom: 1 } }));
       setNewCam({ name: "", location: CAMERA_LOCATIONS[0], camera_id: "", ip_address: "", nvr_info: "" });
-      toast.success(`Camera "${cam.name}" added`);
+      toast.success(`Camera "${cam.name}" added to database`);
       logAudit("CREATE_CAMERA", cam.id);
+    } catch (err: unknown) {
+      toast.error(`Failed to create camera: ${(err as Error).message}`);
     } finally {
       setCreating(false);
     }
   };
 
-  const handleDeleteCamera = (id: string) => {
+  const handleDeleteCamera = async (id: string) => {
     const cam = cameras.find((c) => c.id === id);
     setCameras((prev) => prev.filter((c) => c.id !== id));
+    // Delete from DB (only if it's a real UUID, not a fallback cam-N id)
+    if (cam && !id.startsWith("cam-")) {
+      const { error } = await supabase.from("cctv_cameras").delete().eq("id", id);
+      if (error) console.warn("[CCTV] Delete from DB failed:", error.message);
+    }
     if (cam) {
       toast.success(`Camera "${cam.name}" removed`);
       logAudit("DELETE_CAMERA", id);
     }
   };
 
-  const handleRefreshStatus = (id: string) => {
-    setCameras((prev) =>
-      prev.map((c) =>
-        c.id === id
-          ? { ...c, status: Math.random() > 0.15 ? "online" : "offline", last_online: new Date().toISOString() }
-          : c
-      )
-    );
+  const handleRefreshStatus = async (id: string) => {
+    const cam = cameras.find((c) => c.id === id);
+    if (!cam) return;
+    // Poll edge function for single camera status
+    try {
+      const { data } = await supabase.functions.invoke("sentinel-feeds", {
+        body: { action: "cctv_status", camera_ids: [id] },
+      });
+      const s = data?.statuses?.[id];
+      if (s) {
+        const newStatus = s.status as CCTVCamera["status"];
+        setCameras((prev) =>
+          prev.map((c) => c.id === id ? { ...c, status: newStatus, last_online: s.last_online } : c)
+        );
+        // Update DB status
+        if (!id.startsWith("cam-")) {
+          await supabase.from("cctv_cameras").update({ status: newStatus, last_online: s.last_online, updated_at: new Date().toISOString() }).eq("id", id);
+        }
+        toast.success(`${cam.name}: ${newStatus.toUpperCase()}`);
+      }
+    } catch {
+      toast.error("Status refresh failed");
+    }
     logAudit("REFRESH_STATUS", id);
-    toast.success("Status refreshed");
   };
 
   const onlineCount  = cameras.filter((c) => c.status === "online").length;
   const offlineCount = cameras.filter((c) => c.status === "offline").length;
   const totalStorage = cameras.reduce((acc, c) => acc + (c.storage_used_gb ?? 0), 0);
+
+  if (dbLoading && cameras.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full bg-sx-bg">
+        <div className="text-center space-y-3">
+          <div className="font-mono text-[10px] text-sx-cyan tracking-widest animate-pulse">LOADING CAMERA REGISTRY FROM DATABASE…</div>
+          <div className="flex justify-center gap-1">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="w-1 rounded-full bg-sx-cyan/40" style={{
+                height: `${10 + (i % 3) * 5}px`,
+                animation: `pulse ${0.5 + i * 0.1}s ease-in-out infinite alternate`,
+              }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!canView) {
     return (

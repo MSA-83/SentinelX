@@ -1556,7 +1556,7 @@ export function MapView({
           ⚠ TS // SENTINEL // NOFORN
         </div>
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.4)" }}>
-          DOMAIN COVERAGE: GLOBAL // 9 DOMAINS
+          SOURCES: 13 OSINT FEEDS // 9 DOMAINS
         </div>
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.4)" }}>
           STREAM: LIVE // Δt: 3s

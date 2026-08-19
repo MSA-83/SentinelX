@@ -22,12 +22,23 @@ const DOMAIN_ICONS: Record<string, string> = {
 };
 
 const DOMAIN_LABELS: Record<string, string> = {
+  seismic:  "USGS+EMSC",
+  weather:  "OpenWeather",
+  orbital:  "N2YO+CelesTrak+SpaceTrack",
+  conflict: "NewsAPI+GDELT+FIRMS",
+  cyber:    "Shodan",
+  aviation: "OpenSky+AVWX",
+  maritime: "GFW",
+};
+
+// Friendly short label per feed domain entry
+const FEED_LABEL: Record<string, string> = {
   seismic:  "USGS",
   weather:  "OWM",
   orbital:  "N2YO",
-  conflict: "NEWS/FIRMS",
+  conflict: "NEWS",
   cyber:    "SHODAN",
-  aviation: "AVWX",
+  aviation: "OPENSKY",
   maritime: "GFW",
 };
 
@@ -84,9 +95,24 @@ export function LiveFeedBadge({
             color: isLoading ? "#f59e0b" : totalLiveEntities > 0 ? "#10b981" : "#475569",
           }}
         >
-          {isLoading ? "FETCHING" : `LIVE:${totalLiveEntities}`}
+          {isLoading ? "FETCHING…" : `LIVE:${totalLiveEntities}`}
         </span>
       </div>
+
+      {/* Source count */}
+      {!isLoading && feedStatuses.length > 0 && (
+        <span
+          className="font-mono text-[7px] px-1 py-0.5 rounded"
+          style={{
+            background: "rgba(0,212,255,0.06)",
+            border: "1px solid rgba(0,212,255,0.15)",
+            color: "rgba(0,212,255,0.6)",
+          }}
+          title="13 real-world OSINT sources: USGS, EMSC, OpenWeather, N2YO, CelesTrak, NASA FIRMS, NewsAPI, GDELT, Shodan, OpenSky, AVWX, GFW, Space-Track"
+        >
+          {liveCount}/{feedStatuses.length} SRC
+        </span>
+      )}
 
       {/* Feed status dots */}
       {feedStatuses.length > 0 && (
@@ -94,7 +120,7 @@ export function LiveFeedBadge({
           {feedStatuses.map((status) => (
             <div
               key={status.domain}
-              title={`${DOMAIN_LABELS[status.domain] ?? status.domain.toUpperCase()}: ${status.isLive ? `${status.entityCount} entities (${status.latencyMs}ms)` : status.error ?? "No data"}`}
+              title={`${FEED_LABEL[status.domain] ?? status.domain.toUpperCase()}: ${status.isLive ? `${status.entityCount} entities (${status.latencyMs}ms)` : status.error ?? "No data"}`}
               className="w-1.5 h-1.5 rounded-full transition-all"
               style={{
                 background: status.error ? "#ef4444" : status.isLive ? "#10b981" : "#334155",
@@ -129,7 +155,7 @@ export function LiveFeedBadge({
           disabled={isLoading}
           className="font-mono text-[8px] transition-colors"
           style={{ color: isLoading ? "#334155" : "rgba(0,212,255,0.4)" }}
-          title="Refresh live feeds"
+          title="Refresh all 13 live feeds (USGS, EMSC, OpenSky, GDELT, CelesTrak…)"
         >
           ↻
         </button>

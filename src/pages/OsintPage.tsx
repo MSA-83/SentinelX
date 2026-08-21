@@ -11,7 +11,7 @@ import { useSearchParams } from "react-router-dom";
 
 type OsintTool =
   | "ip" | "dns" | "whois" | "bgp" | "mac"
-  | "cve" | "certs" | "sanctions" | "phone" | "sweep" | "reverseip";
+  | "cve" | "certs" | "sanctions" | "phone" | "sweep" | "reverseip" | "shodan";
 
 interface WhoisEntity {
   roles: string[];
@@ -835,6 +835,253 @@ function WhoisTool() {
   );
 }
 
+// ─── TOOL: Shodan InternetDB Lookup ─────────────────────────────────────────
+
+interface ShodanResult {
+  ip: string;
+  ports: number[];
+  cpes: string[];
+  tags: string[];
+  hostnames: string[];
+  vulns: string[];
+}
+
+const DANGER_PORTS = new Set([21, 22, 23, 25, 135, 139, 445, 1433, 1521, 3306, 3389, 4444, 5432, 5900, 6379, 8443, 9200, 27017]);
+const COMMON_WEB   = new Set([80, 443, 8080, 8000, 8008, 8888]);
+
+function portColor(port: number): string {
+  if (DANGER_PORTS.has(port)) return "#ef4444";
+  if (COMMON_WEB.has(port))   return "#22d3ee";
+  return "#84cc16";
+}
+
+function portLabel(port: number): string {
+  const labels: Record<number, string> = {
+    21: "FTP", 22: "SSH", 23: "TELNET", 25: "SMTP", 53: "DNS",
+    80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
+    1433: "MSSQL", 1521: "ORACLE", 3306: "MYSQL", 3389: "RDP",
+    5432: "PGSQL", 5900: "VNC", 6379: "REDIS", 8080: "HTTP-ALT",
+    8443: "HTTPS-ALT", 9200: "ELASTIC", 27017: "MONGO",
+  };
+  return labels[port] ?? "";
+}
+
+function ShodanTool() {
+  const [ip, setIp] = useState("");
+  const [result, setResult] = useState<ShodanResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [notFound, setNotFound] = useState(false);
+
+  const lookup = async () => {
+    const raw = ip.trim();
+    if (!raw) return;
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(raw)) {
+      toast.error("Shodan InternetDB requires a valid IPv4 address");
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    setNotFound(false);
+
+    try {
+      const res = await fetch(`https://internetdb.shodan.io/${encodeURIComponent(raw)}`);
+      if (res.status === 404) { setNotFound(true); setLoading(false); return; }
+      if (!res.ok) throw new Error(`Shodan HTTP ${res.status}`);
+      const data = await res.json();
+      setResult({
+        ip:        data.ip ?? raw,
+        ports:     Array.isArray(data.ports)     ? [...data.ports].sort((a: number, b: number) => a - b) : [],
+        cpes:      Array.isArray(data.cpes)      ? data.cpes      : [],
+        tags:      Array.isArray(data.tags)      ? data.tags      : [],
+        hostnames: Array.isArray(data.hostnames) ? data.hostnames : [],
+        vulns:     Array.isArray(data.vulns)     ? data.vulns     : [],
+      });
+    } catch (e: any) {
+      toast.error(`Shodan: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasDangerPort = result?.ports.some((p) => DANGER_PORTS.has(p)) ?? false;
+  const riskColor = result
+    ? result.vulns.length > 0  ? "#ef4444"
+    : hasDangerPort            ? "#f97316"
+    : "#10b981"
+    : "#00d4ff";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={ip}
+          onChange={(e) => setIp(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && lookup()}
+          placeholder="IPv4 address (e.g. 8.8.8.8)"
+          style={inputStyle()}
+        />
+        <LookupBtn onClick={lookup} loading={loading} label="SCAN" />
+      </div>
+
+      <div className="font-mono text-[8px] px-1" style={{ color: "rgba(71,85,105,0.7)" }}>
+        ℹ Uses Shodan InternetDB (free, no API key). Returns open ports, CPEs, hostnames, CVEs, and tags for any public IPv4.
+      </div>
+
+      {notFound && (
+        <ResultCard title="NOT INDEXED BY SHODAN" color="#10b981">
+          <div className="font-mono text-[9px] text-sx-text">
+            <span className="text-sx-green">✓ CLEAR</span> — IP <span style={{ color: "#00d4ff" }}>{ip.trim()}</span> has no Shodan record.
+            Likely a private range, offline host, or not yet scanned.
+          </div>
+        </ResultCard>
+      )}
+
+      {result && (
+        <ResultCard title={`SHODAN INTERNETDB — ${result.ip}`} color={riskColor}>
+          {/* Risk banner */}
+          <div className="flex items-center gap-2 pb-2 mb-1" style={{ borderBottom: "1px solid #1e3a5f" }}>
+            {result.vulns.length > 0 && (
+              <span className="font-mono text-[8px] font-bold px-2 py-0.5 rounded"
+                style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", color: "#ef4444" }}>
+                ⚠ {result.vulns.length} CVE{result.vulns.length !== 1 ? "S" : ""}
+              </span>
+            )}
+            {hasDangerPort && result.vulns.length === 0 && (
+              <span className="font-mono text-[8px] font-bold px-2 py-0.5 rounded"
+                style={{ background: "rgba(249,115,22,0.1)", border: "1px solid rgba(249,115,22,0.3)", color: "#f97316" }}>
+                ⚠ HIGH-RISK PORT EXPOSED
+              </span>
+            )}
+            {!hasDangerPort && result.vulns.length === 0 && result.ports.length > 0 && (
+              <span className="font-mono text-[8px] font-bold px-2 py-0.5 rounded"
+                style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)", color: "#10b981" }}>
+                ✓ LOW RISK PROFILE
+              </span>
+            )}
+            <span className="font-mono text-[8px] text-sx-text-muted ml-auto">
+              {result.ports.length} PORT{result.ports.length !== 1 ? "S" : ""} OPEN
+            </span>
+          </div>
+
+          {/* Open ports */}
+          {result.ports.length > 0 && (
+            <div className="mb-3">
+              <div className="font-mono text-[8px] text-sx-text-muted mb-1.5">OPEN PORTS</div>
+              <div className="flex flex-wrap gap-1">
+                {result.ports.map((port) => {
+                  const col = portColor(port);
+                  const lbl = portLabel(port);
+                  return (
+                    <span key={port}
+                      className="font-mono font-bold px-1.5 py-0.5 rounded"
+                      style={{
+                        fontSize: 8,
+                        background: `${col}12`,
+                        border:     `1px solid ${col}35`,
+                        color:       col,
+                        letterSpacing: "0.04em",
+                      }}
+                      title={DANGER_PORTS.has(port) ? "⚠ High-risk port" : undefined}
+                    >
+                      {port}{lbl ? <span style={{ opacity: 0.65, marginLeft: 3, fontSize: 7 }}>{lbl}</span> : null}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Tags */}
+          {result.tags.length > 0 && (
+            <div className="mb-3">
+              <div className="font-mono text-[8px] text-sx-text-muted mb-1">TAGS</div>
+              <div className="flex flex-wrap gap-1">
+                {result.tags.map((tag) => (
+                  <span key={tag}
+                    className="font-mono text-[8px] px-1.5 py-0.5 rounded"
+                    style={{ background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.2)", color: "#a855f7" }}>
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Hostnames */}
+          {result.hostnames.length > 0 && (
+            <div className="mb-3">
+              <div className="font-mono text-[8px] text-sx-text-muted mb-1">HOSTNAMES</div>
+              <div className="space-y-0.5">
+                {result.hostnames.slice(0, 8).map((h) => (
+                  <div key={h} className="font-mono text-[9px] px-2 py-1 rounded"
+                    style={{ background: "#080e1a", border: "1px solid #1e3a5f", color: "#22d3ee" }}>
+                    {h}
+                  </div>
+                ))}
+                {result.hostnames.length > 8 && (
+                  <div className="font-mono text-[8px]" style={{ color: "rgba(71,85,105,0.6)" }}>
+                    +{result.hostnames.length - 8} more hostnames
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* CPEs */}
+          {result.cpes.length > 0 && (
+            <div className="mb-3">
+              <div className="font-mono text-[8px] text-sx-text-muted mb-1">SOFTWARE / CPEs ({result.cpes.length})</div>
+              <div className="space-y-0.5 max-h-28 overflow-y-auto pr-1"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "#1e3a5f transparent" }}>
+                {result.cpes.map((cpe, i) => (
+                  <div key={i} className="font-mono text-[8px] px-2 py-1 rounded break-all"
+                    style={{ background: "#080e1a", border: "1px solid #1e3a5f", color: "#94a3b8" }}>
+                    {cpe}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* CVEs */}
+          {result.vulns.length > 0 && (
+            <div>
+              <div className="font-mono text-[8px] font-bold mb-1.5"
+                style={{ color: "rgba(239,68,68,0.85)" }}>
+                ⚠ KNOWN VULNERABILITIES ({result.vulns.length})
+              </div>
+              <div className="space-y-1 max-h-36 overflow-y-auto pr-1"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "#1e3a5f transparent" }}>
+                {result.vulns.map((cve) => (
+                  <div key={cve}
+                    className="flex items-center justify-between gap-3 px-2 py-1.5 rounded"
+                    style={{ background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                    <span className="font-mono text-[9px] font-bold" style={{ color: "#ef4444" }}>{cve}</span>
+                    <a
+                      href={`https://nvd.nist.gov/vuln/detail/${cve}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-[7px] flex-shrink-0"
+                      style={{ color: "#00d4ff" }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      NVD ↗
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-2 font-mono text-[8px]" style={{ color: "rgba(71,85,105,0.55)" }}>
+            Source: internetdb.shodan.io — passive scan data, updated periodically
+          </div>
+        </ResultCard>
+      )}
+    </div>
+  );
+}
+
 // ─── TOOL: Reverse IP Lookup ──────────────────────────────────────────────────
 
 function ReverseIpTool() {
@@ -1365,6 +1612,7 @@ const TOOLS: { id: OsintTool; label: string; icon: string; desc: string; compone
   { id: "phone",     label: "PHONE LOOKUP",         icon: "☏", desc: "E.164 validation, country, line type, region",    component: PhoneTool },
   { id: "whois",     label: "WHOIS / RDAP",          icon: "⊗", desc: "Registrar, registrant, NS, expiry via RDAP",       component: WhoisTool },
   { id: "reverseip", label: "REVERSE IP",            icon: "⊙", desc: "Discover co-hosted domains on a shared IP",        component: ReverseIpTool },
+  { id: "shodan",    label: "SHODAN LOOKUP",         icon: "⊛", desc: "Open ports, CVEs, CPEs, tags via InternetDB",      component: ShodanTool },
 ];
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
@@ -1595,6 +1843,22 @@ export function OsintPage() {
           </div>
 
           <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
+            <div style={labelStyle()} className="mb-1.5">TEST IPs (SHODAN)</div>
+            {[
+              ["8.8.8.8",        "Google DNS"],
+              ["104.18.2.34",    "Cloudflare Edge"],
+              ["185.220.101.1",  "Tor Exit Node"],
+            ].map(([ipAddr, label]) => (
+              <button key={ipAddr} onClick={() => setActiveTool("shodan")}
+                className="w-full text-left px-2 py-1 rounded mb-0.5 transition-all"
+                style={{ background: "#080e1a", border: "1px solid #1e3a5f" }}>
+                <div className="font-mono text-[8px]" style={{ color: "#22d3ee" }}>{ipAddr}</div>
+                <div className="font-mono text-[7px] text-sx-text-muted">{label}</div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
             <div style={labelStyle()} className="mb-1.5">TEST IPs (REVERSE)</div>
             {[
               ["104.21.30.5",   "Cloudflare shared"],
@@ -1623,6 +1887,7 @@ export function OsintPage() {
               ["E.164 static data", "Phone validation"],
               ["rdap.org / arin.net", "WHOIS/RDAP"],
               ["api.hackertarget.com", "Reverse IP DNS"],
+              ["internetdb.shodan.io", "Shodan host data"],
             ].map(([src, desc]) => (
               <div key={src as string} className="py-0.5">
                 <div className="font-mono text-[8px]" style={{ color: "#475569" }}>{src}</div>

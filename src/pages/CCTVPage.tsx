@@ -698,12 +698,18 @@ const STATIC_CAMS: PublicCam[] = [
 ];
 
 function PublicCamerasTab() {
-  const [tflCams, setTflCams]             = useState<PublicCam[]>([]);
-  const [tflLoading, setTflLoading]       = useState(true);
-  const [tick, setTick]                   = useState(0);
-  const [countryFilter, setCountryFilter] = useState("ALL");
-  const [imgStatus, setImgStatus]         = useState<Record<string, "loading" | "ok" | "error">>({});
-  const tickRef = useRef<ReturnType<typeof setInterval>>();
+  const [tflCams, setTflCams]                 = useState<PublicCam[]>([]);
+  const [tflLoading, setTflLoading]           = useState(true);
+  const [tick, setTick]                       = useState(0);
+  const [countryFilter, setCountryFilter]     = useState("ALL");
+  const [imgStatus, setImgStatus]             = useState<Record<string, "loading" | "ok" | "error">>({});
+  const [selectedCam, setSelectedCam]         = useState<PublicCam | null>(null);
+  const [fsImgStatus, setFsImgStatus]         = useState<"loading" | "ok" | "error">("loading");
+  const [copySuccess, setCopySuccess]         = useState(false);
+  const [countdown, setCountdown]             = useState(5);
+  const [lastUpdated, setLastUpdated]         = useState<string | null>(null);
+  const tickRef     = useRef<ReturnType<typeof setInterval>>();
+  const cdRef       = useRef<ReturnType<typeof setInterval>>();
 
   // Fetch TfL JamCam list — free, no key
   useEffect(() => {
@@ -761,9 +767,32 @@ function PublicCamerasTab() {
 
   // 5-second auto-refresh tick
   useEffect(() => {
-    tickRef.current = setInterval(() => setTick((t) => t + 1), 5000);
+    tickRef.current = setInterval(() => {
+      setTick((t) => t + 1);
+      setCountdown(5);
+      setLastUpdated(new Date().toUTCString().split(" ")[4] + "Z");
+    }, 5000);
     return () => clearInterval(tickRef.current);
   }, []);
+
+  // Per-second countdown for fullscreen refresh indicator
+  useEffect(() => {
+    cdRef.current = setInterval(() => setCountdown((c) => (c <= 1 ? 5 : c - 1)), 1000);
+    return () => clearInterval(cdRef.current);
+  }, []);
+
+  // ESC key closes fullscreen
+  useEffect(() => {
+    if (!selectedCam) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setSelectedCam(null); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedCam]);
+
+  // Reset fullscreen image status on camera change
+  useEffect(() => {
+    if (selectedCam) setFsImgStatus("loading");
+  }, [selectedCam?.id, tick]);
 
   const allCams: PublicCam[] = [...tflCams, ...STATIC_CAMS];
   const filtered = countryFilter === "ALL"
@@ -776,8 +805,275 @@ function PublicCamerasTab() {
   const onlineCount = Object.values(imgStatus).filter(s => s === "ok").length;
   const totalChecked = Object.values(imgStatus).length;
 
+  const handleCopyUrl = async (cam: PublicCam) => {
+    try {
+      await navigator.clipboard.writeText(cam.imageUrl);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    } catch {
+      // Fallback for environments without clipboard API
+      const el = document.createElement("textarea");
+      el.value = cam.imageUrl;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-sx-bg overflow-hidden">
+
+      {/* ── FULLSCREEN OVERLAY ───────────────────────────────────────────────── */}
+      {selectedCam && (() => {
+        const sep = selectedCam.imageUrl.includes("?") ? "&" : "?";
+        const bustedFs = `${selectedCam.imageUrl}${sep}_t=${tick}`;
+        const pct = Math.round((countdown / 5) * 100);
+        return (
+          <div
+            className="fixed inset-0 z-[900] flex flex-col"
+            style={{ background: "rgba(2,6,23,0.98)", backdropFilter: "blur(8px)" }}
+          >
+            {/* Top bar */}
+            <div
+              className="flex-shrink-0 flex items-center justify-between px-5 py-2.5 border-b border-sx-border"
+              style={{ background: "#0d1424" }}
+            >
+              {/* Left: flag + name */}
+              <div className="flex items-center gap-3">
+                <span style={{ fontSize: 22 }}>{selectedCam.flag}</span>
+                <div>
+                  <div className="font-mono text-[12px] font-bold text-sx-cyan tracking-wider">
+                    {selectedCam.name}
+                  </div>
+                  <div className="font-mono text-[9px] text-sx-text-muted">
+                    {selectedCam.location} &nbsp;·&nbsp; {selectedCam.source}
+                  </div>
+                </div>
+              </div>
+
+              {/* Centre: live badge + countdown ring */}
+              <div className="flex items-center gap-4">
+                {/* SVG countdown ring */}
+                <div className="relative flex items-center justify-center" style={{ width: 38, height: 38 }}>
+                  <svg width="38" height="38" viewBox="0 0 38 38" style={{ transform: "rotate(-90deg)" }}>
+                    <circle cx="19" cy="19" r="16" fill="none"
+                      stroke="rgba(0,212,255,0.12)" strokeWidth="2.5" />
+                    <circle cx="19" cy="19" r="16" fill="none"
+                      stroke="#00d4ff" strokeWidth="2.5"
+                      strokeDasharray={`${2 * Math.PI * 16}`}
+                      strokeDashoffset={`${2 * Math.PI * 16 * (1 - pct / 100)}`}
+                      strokeLinecap="round"
+                      style={{ transition: "stroke-dashoffset 0.9s linear" }}
+                    />
+                  </svg>
+                  <span
+                    className="absolute font-mono font-bold"
+                    style={{ fontSize: 10, color: "#00d4ff" }}
+                  >
+                    {countdown}s
+                  </span>
+                </div>
+                {fsImgStatus === "ok" && (
+                  <div className="flex items-center gap-1.5 px-2 py-1 rounded"
+                    style={{ background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)" }}>
+                    <div className="w-1.5 h-1.5 rounded-full"
+                      style={{ background: "#10b981", animation: "pulse 2s infinite" }} />
+                    <span className="font-mono text-[9px] font-bold" style={{ color: "#10b981" }}>LIVE</span>
+                  </div>
+                )}
+                {lastUpdated && (
+                  <span className="font-mono text-[8px]" style={{ color: "rgba(0,212,255,0.4)" }}>
+                    UPD: {lastUpdated}
+                  </span>
+                )}
+              </div>
+
+              {/* Right: actions */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCopyUrl(selectedCam)}
+                  className="flex items-center gap-1.5 font-mono text-[9px] font-bold px-3 py-1.5 rounded transition-all"
+                  style={{
+                    background: copySuccess ? "rgba(16,185,129,0.15)" : "rgba(0,212,255,0.1)",
+                    border: `1px solid ${copySuccess ? "rgba(16,185,129,0.4)" : "rgba(0,212,255,0.3)"}`,
+                    color: copySuccess ? "#10b981" : "#00d4ff",
+                  }}
+                  title="Copy image URL for OSINT export"
+                >
+                  {copySuccess ? "✓ COPIED" : "⎘ COPY URL"}
+                </button>
+                <button
+                  onClick={() => setSelectedCam(null)}
+                  className="flex items-center gap-1.5 font-mono text-[9px] px-3 py-1.5 rounded transition-all"
+                  style={{
+                    background: "rgba(239,68,68,0.08)",
+                    border: "1px solid rgba(239,68,68,0.25)",
+                    color: "#ef4444",
+                  }}
+                >
+                  ✕ CLOSE &nbsp;<span style={{ opacity: 0.5 }}>ESC</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Main body: large image + metadata sidebar */}
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+
+              {/* Image panel */}
+              <div className="flex-1 flex items-center justify-center p-4 relative overflow-hidden">
+                {fsImgStatus === "loading" && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+                    style={{ background: "#020617" }}>
+                    <div className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
+                      style={{ borderColor: "rgba(0,212,255,0.2)", borderTopColor: "#00d4ff" }} />
+                    <span className="font-mono text-[10px] text-sx-cyan/70 animate-pulse tracking-widest">CONNECTING…</span>
+                  </div>
+                )}
+                {fsImgStatus === "error" && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+                    style={{ background: "#0d0505" }}>
+                    <div className="text-4xl opacity-20">📷</div>
+                    <span className="font-mono text-[10px] tracking-widest" style={{ color: "rgba(239,68,68,0.6)" }}>
+                      SIGNAL LOST — FEED UNAVAILABLE
+                    </span>
+                    <span className="font-mono text-[8px] text-sx-text-muted">Retrying on next refresh cycle ({countdown}s)</span>
+                  </div>
+                )}
+                <img
+                  key={`fs-${selectedCam.id}-${tick}`}
+                  src={bustedFs}
+                  alt={selectedCam.name}
+                  className="max-w-full max-h-full rounded object-contain"
+                  style={{
+                    display: fsImgStatus === "error" ? "none" : "block",
+                    boxShadow: "0 0 40px rgba(0,212,255,0.08), 0 0 80px rgba(0,0,0,0.6)",
+                    border: "1px solid rgba(0,212,255,0.1)",
+                  }}
+                  onLoad={() => { setFsImgStatus("ok"); setLastUpdated(new Date().toUTCString().split(" ")[4] + "Z"); }}
+                  onError={() => setFsImgStatus("error")}
+                />
+                {/* Scanline overlay */}
+                {fsImgStatus === "ok" && (
+                  <div className="absolute inset-0 pointer-events-none rounded" style={{
+                    background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.035) 2px,rgba(0,0,0,0.035) 3px)",
+                  }} />
+                )}
+                {/* Corner brackets */}
+                {(["top-4 left-4 border-t-2 border-l-2",
+                   "top-4 right-4 border-t-2 border-r-2",
+                   "bottom-4 left-4 border-b-2 border-l-2",
+                   "bottom-4 right-4 border-b-2 border-r-2"] as const).map((cls, i) => (
+                  <div key={i} className={`absolute w-5 h-5 ${cls} pointer-events-none`}
+                    style={{ borderColor: "rgba(0,212,255,0.2)" }} />
+                ))}
+              </div>
+
+              {/* Metadata sidebar */}
+              <div
+                className="w-64 flex-shrink-0 flex flex-col border-l border-sx-border overflow-y-auto"
+                style={{ background: "#0a0f1e" }}
+              >
+                <div className="flex-shrink-0 px-4 py-2.5 border-b border-sx-border"
+                  style={{ background: "#0d1424" }}>
+                  <span className="font-mono text-[8px] text-sx-text-muted tracking-widest">CAMERA INTELLIGENCE</span>
+                </div>
+
+                <div className="p-4 space-y-4">
+                  {/* Status card */}
+                  <div className="rounded border p-3"
+                    style={{ background: "#080e1a", borderColor: fsImgStatus === "ok" ? "rgba(16,185,129,0.25)" : fsImgStatus === "error" ? "rgba(239,68,68,0.25)" : "rgba(245,158,11,0.25)" }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-2 h-2 rounded-full" style={{
+                        background: fsImgStatus === "ok" ? "#10b981" : fsImgStatus === "error" ? "#ef4444" : "#f59e0b",
+                        animation: "pulse 2s infinite",
+                      }} />
+                      <span className="font-mono text-[9px] font-bold" style={{
+                        color: fsImgStatus === "ok" ? "#10b981" : fsImgStatus === "error" ? "#ef4444" : "#f59e0b",
+                      }}>
+                        {fsImgStatus === "ok" ? "FEED ACTIVE" : fsImgStatus === "error" ? "FEED OFFLINE" : "CONNECTING"}
+                      </span>
+                    </div>
+                    <div className="font-mono text-[8px] text-sx-text-muted">
+                      Auto-refresh every 5 seconds
+                    </div>
+                    <div className="mt-2">
+                      <div className="flex justify-between mb-1">
+                        <span className="font-mono text-[7px] text-sx-text-muted">NEXT REFRESH</span>
+                        <span className="font-mono text-[7px]" style={{ color: "#00d4ff" }}>{countdown}s</span>
+                      </div>
+                      <div className="h-1 rounded-full overflow-hidden" style={{ background: "rgba(0,212,255,0.1)" }}>
+                        <div className="h-full rounded-full"
+                          style={{
+                            width: `${pct}%`,
+                            background: "linear-gradient(90deg,#00d4ff,#a855f7)",
+                            transition: "width 0.9s linear",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Metadata fields */}
+                  <div className="space-y-0.5">
+                    <div className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-2">METADATA</div>
+                    {[
+                      ["CAMERA NAME",  selectedCam.name],
+                      ["LOCATION",     selectedCam.location],
+                      ["COUNTRY",      selectedCam.country],
+                      ["DATA SOURCE",  selectedCam.source],
+                      ["LAST UPDATED", lastUpdated ?? "—"],
+                      ["FEED TYPE",    "JPEG SNAPSHOT"],
+                      ["PROTOCOL",     "HTTP/HTTPS"],
+                      ["AUTH",         "PUBLIC — NO KEY"],
+                    ].map(([k, v]) => (
+                      <div key={k} className="flex items-start justify-between gap-2 py-1.5 border-b"
+                        style={{ borderColor: "rgba(30,58,95,0.4)" }}>
+                        <span className="font-mono text-[7px] text-sx-text-muted flex-shrink-0">{k}</span>
+                        <span className="font-mono text-[8px] text-sx-text text-right break-all">{v}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Image URL box */}
+                  <div>
+                    <div className="font-mono text-[8px] text-sx-text-muted tracking-widest mb-1.5">IMAGE ENDPOINT</div>
+                    <div className="rounded p-2 font-mono text-[7px] break-all"
+                      style={{ background: "#080e1a", border: "1px solid rgba(30,58,95,0.7)", color: "rgba(0,212,255,0.6)" }}>
+                      {selectedCam.imageUrl}
+                    </div>
+                    <button
+                      onClick={() => handleCopyUrl(selectedCam)}
+                      className="w-full mt-2 font-mono text-[8px] py-1.5 rounded transition-all"
+                      style={{
+                        background: copySuccess ? "rgba(16,185,129,0.1)" : "rgba(0,212,255,0.06)",
+                        border: `1px solid ${copySuccess ? "rgba(16,185,129,0.3)" : "rgba(0,212,255,0.2)"}`,
+                        color: copySuccess ? "#10b981" : "#00d4ff",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {copySuccess ? "✓ URL COPIED TO CLIPBOARD" : "⎘ COPY URL FOR OSINT EXPORT"}
+                    </button>
+                  </div>
+
+                  {/* OPSEC notice */}
+                  <div className="rounded p-2.5"
+                    style={{ background: "rgba(245,158,11,0.04)", border: "1px solid rgba(245,158,11,0.15)" }}>
+                    <div className="font-mono text-[7px] leading-relaxed" style={{ color: "rgba(245,158,11,0.6)" }}>
+                      <span style={{ color: "#f59e0b" }}>⚠ OPSEC:</span> Public government DOT feed.
+                      Direct URL requests may be logged by infrastructure provider.
+                      For sensitive operations, route through proxy.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Sub-header: country filters + stats */}
       <div className="flex-shrink-0 px-5 py-2.5 border-b border-sx-border flex items-center justify-between flex-wrap gap-2"
         style={{ background: "#0a0f1e" }}>
@@ -834,7 +1130,9 @@ function PublicCamerasTab() {
 
               return (
                 <div key={cam.id}
-                  className="rounded border overflow-hidden flex flex-col group"
+                  className="rounded border overflow-hidden flex flex-col group cursor-pointer"
+                  onClick={() => setSelectedCam(cam)}
+                  title={`Click to open ${cam.name} fullscreen`}
                   style={{
                     background:  "#0a0f1e",
                     borderColor: status === "error" ? "rgba(239,68,68,0.3)"

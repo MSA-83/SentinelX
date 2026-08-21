@@ -3,7 +3,7 @@
 // stream proxy via edge function, role-based access, offline alerts, audit log,
 // PTZ pan-tilt-zoom controls with preset positions.
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";

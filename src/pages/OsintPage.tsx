@@ -2,7 +2,7 @@
 // OSINT Investigation Toolkit — IP/DNS/WHOIS/BGP/CVE/MAC/Sanctions/Certs
 // All lookups use free public APIs — no key required for most
 
-import { useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { toast } from "sonner";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -671,7 +671,7 @@ function MetaRow({ label, value }: { label: string; value: string }) {
 
 // ─── Tool config ──────────────────────────────────────────────────────────────
 
-const TOOLS: { id: OsintTool; label: string; icon: string; desc: string; component: React.FC }[] = [
+const TOOLS: { id: OsintTool; label: string; icon: string; desc: string; component: () => React.ReactElement | null }[] = [
   { id: "sweep",     label: "PASSIVE SWEEP",       icon: "⊕", desc: "IP geolocation + DNS + BGP + CT logs in one shot", component: SweepTool },
   { id: "ip",        label: "IP LOOKUP",            icon: "◉", desc: "Geolocation, ASN, org, timezone",                  component: IpTool },
   { id: "dns",       label: "DNS RECORDS",          icon: "⊞", desc: "A/AAAA/MX/NS/TXT/CNAME via Google DNS",           component: DnsTool },

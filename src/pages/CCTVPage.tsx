@@ -657,6 +657,291 @@ function CameraView({
   );
 }
 
+// ─── Public Cameras Tab ─────────────────────────────────────────────────────────
+
+interface PublicCam {
+  id: string;
+  name: string;
+  location: string;
+  country: string;
+  flag: string;
+  imageUrl: string;
+  source: string;
+}
+
+const COUNTRY_FILTERS = ["ALL", "🇬🇧 UK", "🇳🇴 Norway", "🇺🇸 USA", "🇦🇺 Australia", "🇯🇵 Japan", "🇸🇪 Sweden"];
+
+const STATIC_CAMS: PublicCam[] = [
+  // Norway — Statens vegvesen (free, no key required)
+  { id: "no-01", name: "E6 Manglerudkrysset",  location: "Oslo, Norway",       country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=18548" },
+  { id: "no-02", name: "E18 Lysaker",           location: "Bærum, Norway",      country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=13218" },
+  { id: "no-03", name: "Rv4 Aker",              location: "Nittedal, Norway",   country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=17018" },
+  { id: "no-04", name: "E39 Bergen South",      location: "Bergen, Norway",     country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=21398" },
+  { id: "no-05", name: "E6 Trondheim Centre",   location: "Trondheim, Norway",  country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=51700" },
+  { id: "no-06", name: "E16 Sandvika",          location: "Sandvika, Norway",   country: "🇳🇴 Norway",    flag: "🇳🇴", source: "Statens Vegvesen", imageUrl: "https://webkamera.atlas.vegvesen.no/public/kamera?id=49399" },
+  // Sweden — Trafikverket public S3
+  { id: "se-01", name: "E4 Stockholm North",    location: "Stockholm, Sweden",  country: "🇸🇪 Sweden",    flag: "🇸🇪", source: "Trafikverket",    imageUrl: "https://vtse-public-media.s3.eu-north-1.amazonaws.com/Camera/Bilder/SE_STA_CAMERA_1001_1.jpg" },
+  { id: "se-02", name: "E20 Gothenburg East",   location: "Gothenburg, Sweden", country: "🇸🇪 Sweden",    flag: "🇸🇪", source: "Trafikverket",    imageUrl: "https://vtse-public-media.s3.eu-north-1.amazonaws.com/Camera/Bilder/SE_STA_CAMERA_1004_1.jpg" },
+  // Australia — livetraffic.com & VicRoads
+  { id: "au-01", name: "M1 Pacific Motorway",   location: "Sydney, NSW",        country: "🇦🇺 Australia", flag: "🇦🇺", source: "NSW RMS",         imageUrl: "https://www.livetraffic.com/xml/getCameraImage.do?cameraId=1551" },
+  { id: "au-02", name: "Harbour Bridge North",  location: "Sydney, NSW",        country: "🇦🇺 Australia", flag: "🇦🇺", source: "NSW RMS",         imageUrl: "https://www.livetraffic.com/xml/getCameraImage.do?cameraId=1201" },
+  { id: "au-03", name: "M3 Eastern Freeway",    location: "Melbourne, VIC",     country: "🇦🇺 Australia", flag: "🇦🇺", source: "VicRoads",        imageUrl: "https://traffic.vicroads.vic.gov.au/cameras/sitev10/cctv6380.jpg" },
+  { id: "au-04", name: "Story Bridge",          location: "Brisbane, QLD",      country: "🇦🇺 Australia", flag: "🇦🇺", source: "QLD TMR",         imageUrl: "https://api.qldtraffic.qld.gov.au/v1/cameras/image/00002" },
+  // Japan — JARTIC public road cameras
+  { id: "jp-01", name: "Shinjuku Expressway",   location: "Tokyo, Japan",       country: "🇯🇵 Japan",     flag: "🇯🇵", source: "JARTIC",          imageUrl: "https://www.jartic.or.jp/ippan/camera/image/t012001.jpg" },
+  { id: "jp-02", name: "Yokohama Kanagawa Rd",  location: "Yokohama, Japan",    country: "🇯🇵 Japan",     flag: "🇯🇵", source: "JARTIC",          imageUrl: "https://www.jartic.or.jp/ippan/camera/image/k011001.jpg" },
+  { id: "jp-03", name: "Hanshin Expressway",    location: "Osaka, Japan",       country: "🇯🇵 Japan",     flag: "🇯🇵", source: "JARTIC",          imageUrl: "https://www.jartic.or.jp/ippan/camera/image/o011001.jpg" },
+  // USA — public state DOT JPEG snapshots
+  { id: "us-01", name: "I-95 Capitol Beltway",  location: "Silver Spring, MD",  country: "🇺🇸 USA",       flag: "🇺🇸", source: "Maryland SHA",    imageUrl: "https://chart.maryland.gov/cameras/images/MD95S123.jpg" },
+  { id: "us-02", name: "I-270 Frederick",       location: "Frederick, MD",      country: "🇺🇸 USA",       flag: "🇺🇸", source: "Maryland SHA",    imageUrl: "https://chart.maryland.gov/cameras/images/MD270N050.jpg" },
+  { id: "us-03", name: "NJ-1 Princeton Junction", location: "Princeton, NJ",    country: "🇺🇸 USA",       flag: "🇺🇸", source: "NJ 511",          imageUrl: "https://images.511nj.org/camera/C01.jpg" },
+];
+
+function PublicCamerasTab() {
+  const [tflCams, setTflCams]             = useState<PublicCam[]>([]);
+  const [tflLoading, setTflLoading]       = useState(true);
+  const [tick, setTick]                   = useState(0);
+  const [countryFilter, setCountryFilter] = useState("ALL");
+  const [imgStatus, setImgStatus]         = useState<Record<string, "loading" | "ok" | "error">>({});
+  const tickRef = useRef<ReturnType<typeof setInterval>>();
+
+  // Fetch TfL JamCam list — free, no key
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetch(
+          "https://api.tfl.gov.uk/Place/Type/JamCam",
+          { signal: AbortSignal.timeout(12000) }
+        );
+        if (!res.ok) throw new Error(`TfL API ${res.status}`);
+        const places: any[] = await res.json();
+
+        const cams: PublicCam[] = places
+          .filter((p) => p.additionalProperties?.find((a: any) => a.key === "available")?.value === "true")
+          .slice(0, 20)
+          .map((p) => {
+            const getId = (key: string) => p.additionalProperties?.find((a: any) => a.key === key)?.value ?? "";
+            const camId = getId("id") || p.id;
+            return {
+              id:       `tfl-${camId}`,
+              name:     (p.commonName ?? camId).slice(0, 40),
+              location: p.commonName ?? "London, UK",
+              country:  "🇬🇧 UK",
+              flag:     "🇬🇧",
+              source:   "TfL JamCam",
+              imageUrl: `https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/${camId}.jpg`,
+            };
+          });
+
+        if (mounted) setTflCams(cams);
+        console.log(`[PublicCams] TfL loaded ${cams.length} cameras`);
+      } catch {
+        // Fallback: known working TfL JamCam IDs
+        if (mounted) setTflCams([
+          "00001.01251", "00001.01471", "00001.01335", "00001.01334",
+          "00001.01257", "00001.06380", "00001.06381", "00001.00897",
+          "00001.06697", "00001.01340", "00001.08251", "00001.08253",
+        ].map((id, i) => ({
+          id:       `tfl-${id}`,
+          name:     `London Junction ${i + 1}`,
+          location: "London, UK",
+          country:  "🇬🇧 UK",
+          flag:     "🇬🇧",
+          source:   "TfL JamCam",
+          imageUrl: `https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/${id}.jpg`,
+        })));
+      } finally {
+        if (mounted) setTflLoading(false);
+      }
+    };
+    load();
+    return () => { mounted = false; };
+  }, []);
+
+  // 5-second auto-refresh tick
+  useEffect(() => {
+    tickRef.current = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(tickRef.current);
+  }, []);
+
+  const allCams: PublicCam[] = [...tflCams, ...STATIC_CAMS];
+  const filtered = countryFilter === "ALL"
+    ? allCams
+    : allCams.filter((c) => c.country === countryFilter);
+
+  const setStatus = (id: string, s: "loading" | "ok" | "error") =>
+    setImgStatus((p) => ({ ...p, [id]: s }));
+
+  const onlineCount = Object.values(imgStatus).filter(s => s === "ok").length;
+  const totalChecked = Object.values(imgStatus).length;
+
+  return (
+    <div className="flex flex-col h-full bg-sx-bg overflow-hidden">
+      {/* Sub-header: country filters + stats */}
+      <div className="flex-shrink-0 px-5 py-2.5 border-b border-sx-border flex items-center justify-between flex-wrap gap-2"
+        style={{ background: "#0a0f1e" }}>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {COUNTRY_FILTERS.map(f => (
+            <button key={f} onClick={() => setCountryFilter(f)}
+              className="font-mono text-[8px] px-2.5 py-1 rounded transition-all"
+              style={{
+                background: countryFilter === f ? "rgba(0,212,255,0.12)" : "transparent",
+                border:     `1px solid ${countryFilter === f ? "rgba(0,212,255,0.3)" : "rgba(30,58,95,0.7)"}`,
+                color:      countryFilter === f ? "#00d4ff" : "#475569",
+                cursor: "pointer",
+              }}>
+              {f}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-4">
+          {totalChecked > 0 && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full"
+                style={{ background: "#10b981", boxShadow: "0 0 4px #10b981", animation: "pulse 2s infinite" }} />
+              <span className="font-mono text-[8px]" style={{ color: "#10b981" }}>
+                {onlineCount}/{totalChecked} ONLINE
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-1.5">
+            <div className="w-1.5 h-1.5 rounded-full" style={{ background: "#f59e0b", animation: "pulse 1s infinite" }} />
+            <span className="font-mono text-[8px]" style={{ color: "rgba(245,158,11,0.7)" }}>REFRESH 5s</span>
+          </div>
+          <span className="font-mono text-[8px] text-sx-text-muted">{filtered.length} CAMERAS</span>
+        </div>
+      </div>
+
+      {/* Camera grid */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {tflLoading && tflCams.length === 0 ? (
+          <div className="flex items-center justify-center py-16">
+            <div className="text-center space-y-2">
+              <div className="font-mono text-[9px] text-sx-cyan animate-pulse tracking-widest">
+                FETCHING TFL JAMCAM LIST…
+              </div>
+              <div className="font-mono text-[8px] text-sx-text-muted">Querying transport.api.tfl.gov.uk</div>
+            </div>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+            {filtered.map((cam) => {
+              const status = imgStatus[cam.id] ?? "loading";
+              // Cache-bust by appending tick to URL to force browser reload
+              const separator = cam.imageUrl.includes("?") ? "&" : "?";
+              const bustedUrl = `${cam.imageUrl}${separator}_t=${tick}`;
+
+              return (
+                <div key={cam.id}
+                  className="rounded border overflow-hidden flex flex-col group"
+                  style={{
+                    background:  "#0a0f1e",
+                    borderColor: status === "error" ? "rgba(239,68,68,0.3)"
+                               : status === "ok"    ? "rgba(16,185,129,0.22)"
+                               : "rgba(30,58,95,0.6)",
+                    transition: "border-color 0.4s",
+                  }}>
+
+                  {/* Image area 4:3 */}
+                  <div className="relative overflow-hidden bg-sx-bg" style={{ aspectRatio: "4/3" }}>
+                    <img
+                      key={`${cam.id}-${tick}`}
+                      src={bustedUrl}
+                      alt={cam.name}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      style={{ display: status === "error" ? "none" : "block" }}
+                      onLoad={()  => setStatus(cam.id, "ok")}
+                      onError={() => setStatus(cam.id, "error")}
+                    />
+
+                    {/* Loading shimmer */}
+                    {status === "loading" && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2"
+                        style={{ background: "#020617" }}>
+                        <div className="w-5 h-5 rounded-full border-2 border-t-transparent animate-spin"
+                          style={{ borderColor: "rgba(0,212,255,0.25)", borderTopColor: "#00d4ff" }} />
+                        <span className="font-mono text-[7px] text-sx-cyan/70 animate-pulse">CONNECTING…</span>
+                      </div>
+                    )}
+
+                    {/* Offline state */}
+                    {status === "error" && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5"
+                        style={{ background: "#0d0505" }}>
+                        <div className="text-xl opacity-20">📷</div>
+                        <span className="font-mono text-[7px] tracking-widest"
+                          style={{ color: "rgba(239,68,68,0.55)" }}>SIGNAL LOST</span>
+                        <span className="font-mono text-[6px] text-sx-text-muted">{cam.source}</span>
+                      </div>
+                    )}
+
+                    {/* LIVE badge — top-left */}
+                    {status === "ok" && (
+                      <div className="absolute top-1.5 left-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded"
+                        style={{ background: "rgba(8,14,26,0.82)", border: "1px solid rgba(16,185,129,0.4)" }}>
+                        <div className="w-1 h-1 rounded-full"
+                          style={{ background: "#10b981", animation: "pulse 2s infinite" }} />
+                        <span className="font-mono text-[6px] font-bold" style={{ color: "#10b981" }}>LIVE</span>
+                      </div>
+                    )}
+
+                    {/* Country flag — top-right */}
+                    <div className="absolute top-1.5 right-1.5 text-sm leading-none"
+                      style={{ filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.85))" }}>
+                      {cam.flag}
+                    </div>
+
+                    {/* Scanline overlay on live feeds */}
+                    {status === "ok" && (
+                      <div className="absolute inset-0 pointer-events-none" style={{
+                        background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.04) 2px,rgba(0,0,0,0.04) 3px)",
+                      }} />
+                    )}
+                  </div>
+
+                  {/* Info bar */}
+                  <div className="px-2 py-1.5 flex items-start justify-between gap-1"
+                    style={{ background: "#080e1a", borderTop: "1px solid rgba(30,58,95,0.5)" }}>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-mono text-[8px] font-bold text-sx-text truncate leading-snug">{cam.name}</div>
+                      <div className="font-mono text-[7px] text-sx-text-muted truncate">{cam.location}</div>
+                    </div>
+                    <div className="flex-shrink-0 flex flex-col items-end gap-0.5 ml-1">
+                      <span className="font-mono text-[6px] px-1 py-0.5 rounded" style={{
+                        background: status === "ok"    ? "rgba(16,185,129,0.08)"
+                                  : status === "error" ? "rgba(239,68,68,0.08)"
+                                  : "rgba(245,158,11,0.08)",
+                        color:      status === "ok"    ? "#10b981"
+                                  : status === "error" ? "#ef4444"
+                                  : "#f59e0b",
+                        border: `1px solid ${status === "ok" ? "rgba(16,185,129,0.2)" : status === "error" ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)"}`,
+                      }}>
+                        {status === "ok" ? "● LIVE" : status === "error" ? "✕ OFFLINE" : "○ …"}
+                      </span>
+                      <span className="font-mono text-[6px] text-sx-text-muted truncate max-w-[56px]">{cam.source}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Source attribution */}
+        <div className="mt-4 px-4 py-2.5 rounded border font-mono text-[8px] text-sx-text-muted leading-relaxed"
+          style={{ background: "rgba(0,212,255,0.03)", borderColor: "rgba(0,212,255,0.1)" }}>
+          <span style={{ color: "#00d4ff" }}>ℹ SOURCE NOTICE:</span>{" "}
+          Official public traffic camera JPEGs sourced from government transport authorities:
+          TfL JamCam (UK), Statens Vegvesen (Norway), Trafikverket (Sweden),
+          NSW RMS / VicRoads (Australia), JARTIC (Japan), Maryland SHA / NJ DOT (USA).
+          No authentication required. Availability depends on upstream DOT infrastructure.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export function CCTVPage() {
@@ -664,7 +949,7 @@ export function CCTVPage() {
   const [cameras, setCameras]             = useState<CCTVCamera[]>([]);
   const [dbLoading, setDbLoading]         = useState(true);
   const [fullscreenCam, setFullscreenCam] = useState<CCTVCamera | null>(null);
-  const [activeTab, setActiveTab]         = useState<"monitor" | "manage" | "audit">("monitor");
+  const [activeTab, setActiveTab]         = useState<"monitor" | "manage" | "audit" | "public">("monitor");
   const [auditLog, setAuditLog]           = useState<AuditEntry[]>([]);
   const [newCam, setNewCam]               = useState({
     name: "", location: CAMERA_LOCATIONS[0], camera_id: "", ip_address: "", nvr_info: "",
@@ -1260,7 +1545,7 @@ export function CCTVPage() {
         className="flex-shrink-0 flex border-b border-sx-border px-4 py-2 gap-1"
         style={{ background: "#0a0f1e" }}
       >
-        {(["monitor", "manage", "audit"] as const).map((tab) => (
+        {(["monitor", "manage", "public", "audit"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -1273,6 +1558,7 @@ export function CCTVPage() {
           >
             {tab === "monitor" ? `CAMERA GRID (${cameras.length})`
               : tab === "manage" ? "MANAGE CAMERAS"
+              : tab === "public" ? "PUBLIC CAMS 🌍"
               : `AUDIT LOG (${auditLog.length})`}
           </button>
         ))}
@@ -1544,6 +1830,11 @@ export function CCTVPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* PUBLIC CAMS TAB */}
+        {activeTab === "public" && (
+          <PublicCamerasTab />
         )}
 
         {/* AUDIT TAB */}

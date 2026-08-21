@@ -28,6 +28,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/exec",       label: "Executive Summary",   shortLabel: "EXEC",  icon: "★" },
   { path: "/workspaces", label: "Workspaces",          shortLabel: "WS",    icon: "⊟" },
   { path: "/cctv",       label: "CCTV Monitor",        shortLabel: "CCTV",  icon: "📹" },
+  { path: "/osint",      label: "OSINT Toolkit",       shortLabel: "OSINT", icon: "🔍", badgeColor: "#10b981" },
   { path: "/admin",      label: "Admin Console",       shortLabel: "ADMIN", icon: "⚙" },
 ];
 

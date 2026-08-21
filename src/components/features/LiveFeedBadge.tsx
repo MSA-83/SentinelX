@@ -108,7 +108,7 @@ export function LiveFeedBadge({
             border: "1px solid rgba(0,212,255,0.15)",
             color: "rgba(0,212,255,0.6)",
           }}
-          title="13 real-world OSINT sources: USGS, EMSC, OpenWeather, N2YO, CelesTrak, NASA FIRMS, NewsAPI, GDELT, Shodan, OpenSky, AVWX, GFW, Space-Track"
+          title="13 real-world OSINT sources: USGS, EMSC, OpenWeather, N2YO, CelesTrak, NASA FIRMS, NewsAPI, GDELT, Shodan, OpenSky, AVWX, GFW, Space-Track, NOAA-SWPC, OpenAQ, Frontlines"
         >
           {liveCount}/{feedStatuses.length} SRC
         </span>
@@ -155,7 +155,7 @@ export function LiveFeedBadge({
           disabled={isLoading}
           className="font-mono text-[8px] transition-colors"
           style={{ color: isLoading ? "#334155" : "rgba(0,212,255,0.4)" }}
-          title="Refresh all 13 live feeds (USGS, EMSC, OpenSky, GDELT, CelesTrak…)"
+          title="Refresh all 16 live feeds (USGS, EMSC, OpenSky, GDELT, CelesTrak, NOAA-SWPC, OpenAQ…)"
         >
           ↻
         </button>

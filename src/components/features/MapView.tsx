@@ -664,6 +664,9 @@ export function MapView({
   const [geofenceCount,  setGeofenceCount]  = useState(0);
   const [breachCount,    setBreachCount]    = useState(0);
   const [heatLegendOpen, setHeatLegendOpen] = useState(true);
+  const [cableActive,    setCableActive]    = useState(false);
+  const [cableLoading,   setCableLoading]   = useState(false);
+  const cableLayerRef    = useRef<LayerGroup | null>(null);
   const [measureMode,   setMeasureMode]   = useState(false);
   const [measureResult, setMeasureResult] = useState<{
     distKm: number; distNm: number; bearing: number;
@@ -807,6 +810,74 @@ export function MapView({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [measureMode]);
+
+  // Toggle submarine cable overlay
+  const toggleCables = useCallback(async () => {
+    const L   = LRef.current;
+    const map = mapRef.current;
+    const cl  = cableLayerRef.current;
+    if (!L || !map || !cl) return;
+
+    if (cableActive) {
+      cl.clearLayers();
+      setCableActive(false);
+      return;
+    }
+
+    setCableLoading(true);
+    try {
+      const res = await fetch("/data/submarine-cables-filtered.json");
+      const geojson = await res.json();
+      const features: any[] = geojson?.features ?? geojson ?? [];
+
+      cl.clearLayers();
+      for (const feature of features) {
+        const coords: [number, number][][] = feature.geometry?.type === "MultiLineString"
+          ? feature.geometry.coordinates
+          : [feature.geometry?.coordinates ?? []];
+        const name = feature.properties?.name ?? feature.properties?.cable_name ?? "Submarine Cable";
+        const color = feature.properties?.color ?? "#00d4ff";
+
+        for (const line of coords) {
+          if (!line || line.length < 2) continue;
+          const latlngs: [number, number][] = line.map(([lon, lat]: [number, number]) => [lat, lon]);
+          L.polyline(latlngs, {
+            color,
+            weight: 1.5,
+            opacity: 0.55,
+            dashArray: "none",
+            interactive: true,
+            className: "cable-line",
+          })
+          .bindTooltip(
+            `<div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:#00d4ff">⚡ ${name}</div>`,
+            { sticky: true, className: "sx-popup", opacity: 0.9 }
+          )
+          .addTo(cl);
+        }
+      }
+      setCableActive(true);
+      console.log(`[Cables] ${features.length} submarine cables rendered`);
+    } catch (err: unknown) {
+      console.error("[Cables] Failed:", (err as Error).message);
+      // Fallback: draw known major cables as hardcoded polylines
+      const MAJOR_CABLES: { name: string; color: string; path: [number, number][] }[] = [
+        { name: "SEA-ME-WE 4",    color: "#f59e0b", path: [[1.3,103.8],[5.5,80.5],[12.8,44.9],[30.0,32.6],[37.0,14.5],[43.3,-5.0]] },
+        { name: "FLAG Atlantic",  color: "#ef4444", path: [[51.5,-0.1],[40.7,-74.0]] },
+        { name: "TAT-14",         color: "#a855f7", path: [[53.3,-6.3],[48.4,-4.5],[40.7,-74.0]] },
+        { name: "EASSy",          color: "#10b981", path: [[-34.0,18.5],[-11.7,43.3],[2.0,41.6],[15.3,39.5],[21.8,38.4]] },
+        { name: "JUPITER",        color: "#22d3ee", path: [[35.7,139.7],[21.3,-157.8],[37.8,-122.4]] },
+      ];
+      for (const cable of MAJOR_CABLES) {
+        L.polyline(cable.path, { color: cable.color, weight: 1.5, opacity: 0.5, dashArray: "6 4" })
+          .bindTooltip(`<div style="font-family:'Share Tech Mono',monospace;font-size:9px;color:${cable.color}">⚡ ${cable.name}</div>`, { sticky: true, className: "sx-popup" })
+          .addTo(cl);
+      }
+      setCableActive(true);
+    } finally {
+      setCableLoading(false);
+    }
+  }, [cableActive]);
 
   // Toggle threat density heatmap overlay
   const toggleHeatmap = useCallback(async () => {
@@ -953,6 +1024,9 @@ export function MapView({
     // Geofence overlay layer (below entity markers)
     geofenceLayerRef.current = L.layerGroup().addTo(map);
 
+    // Submarine cable layer (below entities)
+    cableLayerRef.current = L.layerGroup().addTo(map);
+
     // Measurement layer (topmost interactive layer)
     measureLayerRef.current = L.layerGroup().addTo(map);
 
@@ -992,6 +1066,7 @@ export function MapView({
       clusterRef.current       = null;
       aisLayerRef.current      = null;
       geofenceLayerRef.current = null;
+      cableLayerRef.current    = null;
       measureLayerRef.current  = null;
     };
   }, [leafletReady]);
@@ -1533,6 +1608,11 @@ export function MapView({
             {heatLegendOpen ? "▾ HIDE LEGEND" : "▸ SHOW LEGEND"}
           </div>
         )}
+        {cableActive && (
+          <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.65)", letterSpacing: "0.1em" }}>
+            ⚡ SUBMARINE CABLES ACTIVE
+          </div>
+        )}
         {measureMode && (
           <div className="font-mono" style={{ fontSize: 9, color: "rgba(250,204,21,0.85)", letterSpacing: "0.1em" }}>
             ⊢ MEASURE ACTIVE — {measurePtsRef.current.length === 0 ? "CLICK START POINT" : measurePtsRef.current.length === 1 ? "CLICK END POINT" : "CLICK TO RESET"}
@@ -1556,7 +1636,7 @@ export function MapView({
           ⚠ TS // SENTINEL // NOFORN
         </div>
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.4)" }}>
-          SOURCES: 13 OSINT FEEDS // 9 DOMAINS
+          SOURCES: 16 OSINT FEEDS // 9 DOMAINS
         </div>
         <div className="font-mono" style={{ fontSize: 9, color: "rgba(0,212,255,0.4)" }}>
           STREAM: LIVE // Δt: 3s
@@ -1570,6 +1650,24 @@ export function MapView({
 
       {/* BL — Map mode + cluster + AIS + Planet toggles */}
       <div className="absolute z-[402] flex flex-col gap-1" style={{ bottom: 44, left: 12 }}>
+        {/* Submarine cable toggle */}
+        <button
+          onClick={toggleCables}
+          disabled={cableLoading}
+          style={{
+            background:     cableActive ? "rgba(0,212,255,0.15)" : "rgba(13,20,36,0.88)",
+            color:          cableLoading ? "#475569" : cableActive ? "#00d4ff" : "#475569",
+            border:         cableActive ? "1px solid rgba(0,212,255,0.35)" : "1px solid rgba(30,58,95,0.7)",
+            backdropFilter: "blur(6px)",
+            fontFamily:     "'Share Tech Mono',monospace", fontSize: 9,
+            letterSpacing:  "0.1em", padding: "3px 8px", borderRadius: 2,
+            cursor: cableLoading ? "default" : "pointer", textTransform: "uppercase", transition: "all 0.15s",
+          }}
+          title="Toggle submarine cable infrastructure overlay"
+        >
+          {cableLoading ? "⚡ CABLES…" : cableActive ? "⚡ CABLES ON" : "⚡ CABLES"}
+        </button>
+
         <button
           onClick={() => setClusterMode((v) => !v)}
           style={{

@@ -11,7 +11,27 @@ import { useSearchParams } from "react-router-dom";
 
 type OsintTool =
   | "ip" | "dns" | "whois" | "bgp" | "mac"
-  | "cve" | "certs" | "sanctions" | "phone" | "sweep";
+  | "cve" | "certs" | "sanctions" | "phone" | "sweep" | "reverseip";
+
+interface WhoisEntity {
+  roles: string[];
+  vcardArray?: unknown[];
+  handle?: string;
+}
+
+interface WhoisResult {
+  domain: string;
+  registrar: string;
+  registrantOrg: string;
+  createdDate: string;
+  updatedDate: string;
+  expiryDate: string;
+  nameServers: string[];
+  abuseEmail: string;
+  abusePhone: string;
+  status: string[];
+  rdapSource: string;
+}
 
 interface PhoneResult {
   number: string;
@@ -631,6 +651,367 @@ const LINE_TYPE_INFO: Record<string, { label: string; color: string; note: strin
   UNKNOWN:         { label: "UNKNOWN",           color: "#475569", note: "Type could not be determined" },
 };
 
+// ─── TOOL: WHOIS / RDAP Lookup ──────────────────────────────────────────────
+
+function WhoisTool() {
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState<WhoisResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Extract a vCard field value by field name
+  function vcardField(vcardArray: unknown[] | undefined, field: string): string {
+    if (!vcardArray || !Array.isArray(vcardArray)) return "—";
+    const entries = vcardArray[1] as unknown[][];
+    if (!Array.isArray(entries)) return "—";
+    for (const entry of entries) {
+      if (Array.isArray(entry) && entry[0] === field) {
+        const val = entry[3];
+        if (Array.isArray(val)) return val.join(", ");
+        return String(val ?? "—");
+      }
+    }
+    return "—";
+  }
+
+  function extractEntity(entities: WhoisEntity[], role: string): WhoisEntity | undefined {
+    if (!Array.isArray(entities)) return undefined;
+    return entities.find((e) => Array.isArray(e.roles) && e.roles.includes(role));
+  }
+
+  function extractDate(events: { eventAction: string; eventDate: string }[], action: string): string {
+    if (!Array.isArray(events)) return "—";
+    const ev = events.find((e) => e.eventAction === action);
+    return ev ? ev.eventDate.slice(0, 10) : "—";
+  }
+
+  const lookup = async () => {
+    const raw = query.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!raw) return;
+    setLoading(true);
+    setResult(null);
+
+    try {
+      // Universal RDAP bootstrap — works for most TLDs
+      const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(raw);
+      const url = isIp
+        ? `https://rdap.arin.net/registry/ip/${raw}`
+        : `https://rdap.org/domain/${raw}`;
+
+      const res = await fetch(url, { headers: { Accept: "application/rdap+json" } });
+      if (!res.ok) throw new Error(`RDAP HTTP ${res.status} — domain not found or registry unavailable`);
+      const data = await res.json();
+
+      if (isIp) {
+        // IP WHOIS (ARIN RDAP)
+        const entities: WhoisEntity[] = data.entities ?? [];
+        const abuse = extractEntity(entities, "abuse");
+        const registrant = extractEntity(entities, "registrant") ?? entities[0];
+        const vcard = (registrant as any)?.vcardArray;
+        setResult({
+          domain:        raw,
+          registrar:     data.name ?? "—",
+          registrantOrg: vcardField(vcard, "fn") || data.name || "—",
+          createdDate:   extractDate(data.events ?? [], "registration"),
+          updatedDate:   extractDate(data.events ?? [], "last changed"),
+          expiryDate:    "—",
+          nameServers:   [],
+          abuseEmail:    vcardField((abuse as any)?.vcardArray, "email"),
+          abusePhone:    vcardField((abuse as any)?.vcardArray, "tel"),
+          status:        Array.isArray(data.status) ? data.status : [],
+          rdapSource:    "rdap.arin.net",
+        });
+      } else {
+        // Domain WHOIS (universal RDAP)
+        const entities: WhoisEntity[] = data.entities ?? [];
+        const registrar  = extractEntity(entities, "registrar");
+        const registrant = extractEntity(entities, "registrant");
+        const abuse      = extractEntity(entities, "abuse")
+          ?? (extractEntity(entities, "registrar") as any);
+
+        // Registrar name — often in registrar entity's vcard fn, or legalRepresentative
+        const registrarName =
+          vcardField((registrar as any)?.vcardArray, "fn")
+          || (registrar as any)?.fn
+          || "—";
+
+        const registrantOrg =
+          vcardField((registrant as any)?.vcardArray, "org")
+          || vcardField((registrant as any)?.vcardArray, "fn")
+          || "—";
+
+        const nameServers: string[] = (data.nameservers ?? []).map(
+          (ns: { ldhName?: string }) => (ns.ldhName ?? "").toLowerCase()
+        ).filter(Boolean);
+
+        setResult({
+          domain:        (data.ldhName ?? raw).toLowerCase(),
+          registrar:     registrarName,
+          registrantOrg,
+          createdDate:   extractDate(data.events ?? [], "registration"),
+          updatedDate:   extractDate(data.events ?? [], "last changed"),
+          expiryDate:    extractDate(data.events ?? [], "expiration"),
+          nameServers:   nameServers.slice(0, 8),
+          abuseEmail:    vcardField((abuse as any)?.vcardArray, "email"),
+          abusePhone:    vcardField((abuse as any)?.vcardArray, "tel"),
+          status:        Array.isArray(data.status) ? data.status.slice(0, 4) : [],
+          rdapSource:    "rdap.org (bootstrap)",
+        });
+      }
+    } catch (e: any) {
+      toast.error(`WHOIS/RDAP: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && lookup()}
+          placeholder="domain.com or IP address (e.g. google.com or 8.8.8.8)"
+          style={inputStyle()}
+        />
+        <LookupBtn onClick={lookup} loading={loading} label="WHOIS" />
+      </div>
+
+      {result && (
+        <ResultCard title={`WHOIS / RDAP — ${result.domain.toUpperCase()}`} color="#f59e0b">
+          {/* Domain status badges */}
+          {result.status.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {result.status.map((s, i) => (
+                <span key={i} className="font-mono text-[7px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: s.toLowerCase().includes("delete") || s.toLowerCase().includes("hold")
+                      ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.08)",
+                    border: s.toLowerCase().includes("delete") || s.toLowerCase().includes("hold")
+                      ? "1px solid rgba(239,68,68,0.25)" : "1px solid rgba(245,158,11,0.2)",
+                    color: s.toLowerCase().includes("delete") || s.toLowerCase().includes("hold")
+                      ? "#ef4444" : "#f59e0b",
+                  }}>
+                  {s.replace(/https?:\/\/[^\s]+/g, "").trim()}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {([
+            ["Domain / IP",    result.domain],
+            ["Registrar",      result.registrar],
+            ["Registrant Org", result.registrantOrg],
+            ["Created",        result.createdDate],
+            ["Last Updated",   result.updatedDate],
+            ["Expires",        result.expiryDate],
+            ["Abuse Email",    result.abuseEmail],
+            ["Abuse Phone",    result.abusePhone],
+          ] as [string, string][]).map(([k, v]) => (
+            <MetaRow key={k} label={k} value={v} />
+          ))}
+
+          {/* Name servers */}
+          {result.nameServers.length > 0 && (
+            <div className="mt-2">
+              <div className="font-mono text-[8px] text-sx-text-muted mb-1">NAME SERVERS</div>
+              <div className="space-y-0.5">
+                {result.nameServers.map((ns, i) => (
+                  <div key={i} className="font-mono text-[9px] px-2 py-1 rounded"
+                    style={{ background: "#080e1a", border: "1px solid #1e3a5f", color: "#00d4ff" }}>
+                    {ns}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-2 font-mono text-[8px]" style={{ color: "rgba(71,85,105,0.6)" }}>
+            Source: {result.rdapSource} — RDAP protocol (RFC 9083)
+          </div>
+        </ResultCard>
+      )}
+    </div>
+  );
+}
+
+// ─── TOOL: Reverse IP Lookup ──────────────────────────────────────────────────
+
+function ReverseIpTool() {
+  const [ip, setIp] = useState("");
+  const [domains, setDomains] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
+
+  const lookup = async () => {
+    const raw = ip.trim();
+    if (!raw) return;
+    setLoading(true);
+    setDomains([]);
+    setSearched(false);
+    setPage(0);
+
+    try {
+      // HackerTarget free API — returns plain text, one domain per line
+      const res = await fetch(
+        `https://api.hackertarget.com/reverseiplookup/?q=${encodeURIComponent(raw)}`
+      );
+      if (!res.ok) throw new Error(`HackerTarget HTTP ${res.status}`);
+      const text = await res.text();
+
+      // API returns "error check your API usage" or "No DNS A records" on failure
+      if (text.toLowerCase().startsWith("error") || text.toLowerCase().includes("api count")) {
+        throw new Error(text.trim());
+      }
+      if (text.toLowerCase().includes("no dns") || text.trim() === "") {
+        setDomains([]);
+        setSearched(true);
+        setLoading(false);
+        return;
+      }
+
+      const list = text
+        .split("\n")
+        .map((d) => d.trim().toLowerCase())
+        .filter((d) => d.length > 0 && d.includes("."));
+
+      setDomains(list);
+      setSearched(true);
+      if (list.length === 0) toast.info("No shared-hosting domains found");
+      else toast.success(`${list.length} co-hosted domain${list.length !== 1 ? "s" : ""} found`);
+    } catch (e: any) {
+      toast.error(`Reverse IP: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const paged = domains.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.ceil(domains.length / PAGE_SIZE);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={ip}
+          onChange={(e) => setIp(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && lookup()}
+          placeholder="IPv4 address (e.g. 104.21.30.5)"
+          style={inputStyle()}
+        />
+        <LookupBtn onClick={lookup} loading={loading} label="LOOKUP" />
+      </div>
+
+      <div className="font-mono text-[8px] px-1" style={{ color: "rgba(71,85,105,0.7)" }}>
+        ℹ Discovers all domains sharing the same server IP via passive DNS / shared hosting records
+      </div>
+
+      {searched && domains.length === 0 && (
+        <ResultCard title="NO CO-HOSTED DOMAINS FOUND" color="#10b981">
+          <div className="font-mono text-[9px] text-sx-text">
+            <span className="text-sx-green">✓ ISOLATED</span> — No other domains detected on {ip.trim()}.
+            This may indicate a dedicated server or CDN edge node.
+          </div>
+        </ResultCard>
+      )}
+
+      {domains.length > 0 && (
+        <ResultCard title={`REVERSE IP — ${domains.length} CO-HOSTED DOMAINS`} color="#a855f7">
+          {/* Stats bar */}
+          <div className="flex items-center justify-between mb-2 pb-2"
+            style={{ borderBottom: "1px solid #1e3a5f" }}>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-[9px] font-bold px-2 py-0.5 rounded"
+                style={{ background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.25)", color: "#a855f7" }}>
+                {domains.length} DOMAIN{domains.length !== 1 ? "S" : ""}
+              </span>
+              {domains.length >= 100 && (
+                <span className="font-mono text-[8px]" style={{ color: "#f59e0b" }}>
+                  ⚠ SHARED HOSTING DETECTED
+                </span>
+              )}
+            </div>
+            <span className="font-mono text-[8px] text-sx-text-muted">
+              PAGE {page + 1}/{totalPages || 1}
+            </span>
+          </div>
+
+          {/* Domain grid */}
+          <div className="space-y-1 max-h-64 overflow-y-auto pr-1"
+            style={{ scrollbarWidth: "thin", scrollbarColor: "#1e3a5f transparent" }}>
+            {paged.map((domain, i) => (
+              <div key={i}
+                className="flex items-center gap-2 px-2 py-1.5 rounded group cursor-default"
+                style={{ background: "#080e1a", border: "1px solid #1e3a5f", transition: "border-color 0.12s" }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(168,85,247,0.35)")}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#1e3a5f")}>
+                <span className="font-mono text-[8px] flex-shrink-0"
+                  style={{ color: "rgba(168,85,247,0.5)" }}>
+                  {String(page * PAGE_SIZE + i + 1).padStart(3, "0")}
+                </span>
+                <span className="font-mono text-[9px] text-sx-text flex-1 truncate"
+                  style={{ color: "#94a3b8" }}>
+                  {domain}
+                </span>
+                <a
+                  href={`https://${domain}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[7px] opacity-0 group-hover:opacity-100 flex-shrink-0"
+                  style={{ color: "#00d4ff", transition: "opacity 0.12s" }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  ↗
+                </a>
+              </div>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-2 pt-2"
+              style={{ borderTop: "1px solid #1e3a5f" }}>
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="font-mono text-[8px] px-3 py-1 rounded"
+                style={{
+                  background: page === 0 ? "transparent" : "rgba(168,85,247,0.1)",
+                  border: "1px solid rgba(168,85,247,0.2)",
+                  color: page === 0 ? "#334155" : "#a855f7",
+                  cursor: page === 0 ? "not-allowed" : "pointer",
+                }}>
+                ← PREV
+              </button>
+              <span className="font-mono text-[8px] text-sx-text-muted">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, domains.length)} of {domains.length}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+                className="font-mono text-[8px] px-3 py-1 rounded"
+                style={{
+                  background: page >= totalPages - 1 ? "transparent" : "rgba(168,85,247,0.1)",
+                  border: "1px solid rgba(168,85,247,0.2)",
+                  color: page >= totalPages - 1 ? "#334155" : "#a855f7",
+                  cursor: page >= totalPages - 1 ? "not-allowed" : "pointer",
+                }}>
+                NEXT →
+              </button>
+            </div>
+          )}
+
+          <div className="mt-2 font-mono text-[8px]" style={{ color: "rgba(71,85,105,0.55)" }}>
+            Source: api.hackertarget.com — passive DNS / shared hosting fingerprint
+          </div>
+        </ResultCard>
+      )}
+    </div>
+  );
+}
+
 // ─── TOOL: Phone Number Lookup ────────────────────────────────────────────────
 
 function PhoneTool() {
@@ -982,6 +1363,8 @@ const TOOLS: { id: OsintTool; label: string; icon: string; desc: string; compone
   { id: "certs",     label: "CERT TRANSPARENCY",    icon: "🔒", desc: "Subdomain discovery via CT logs (crt.sh)",        component: CertsTool },
   { id: "sanctions", label: "SANCTIONS CHECK",      icon: "⛔", desc: "US-OFAC / EU / UN sanctions list screening",      component: SanctionsTool },
   { id: "phone",     label: "PHONE LOOKUP",         icon: "☏", desc: "E.164 validation, country, line type, region",    component: PhoneTool },
+  { id: "whois",     label: "WHOIS / RDAP",          icon: "⊗", desc: "Registrar, registrant, NS, expiry via RDAP",       component: WhoisTool },
+  { id: "reverseip", label: "REVERSE IP",            icon: "⊙", desc: "Discover co-hosted domains on a shared IP",        component: ReverseIpTool },
 ];
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
@@ -1196,6 +1579,38 @@ export function OsintPage() {
           </div>
 
           <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
+            <div style={labelStyle()} className="mb-1.5">TEST DOMAINS (WHOIS)</div>
+            {[
+              ["google.com", "Alphabet / Google"],
+              ["cloudflare.com", "Cloudflare CDN"],
+              ["telegram.org", "Telegram Messenger"],
+            ].map(([domain, label]) => (
+              <button key={domain} onClick={() => setActiveTool("whois")}
+                className="w-full text-left px-2 py-1 rounded mb-0.5 transition-all"
+                style={{ background: "#080e1a", border: "1px solid #1e3a5f" }}>
+                <div className="font-mono text-[8px]" style={{ color: "#f59e0b" }}>{domain}</div>
+                <div className="font-mono text-[7px] text-sx-text-muted">{label}</div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
+            <div style={labelStyle()} className="mb-1.5">TEST IPs (REVERSE)</div>
+            {[
+              ["104.21.30.5",   "Cloudflare shared"],
+              ["104.18.2.34",   "Cloudflare edge"],
+              ["199.59.148.1", "Twitter/X CDN"],
+            ].map(([ipAddr, label]) => (
+              <button key={ipAddr} onClick={() => setActiveTool("reverseip")}
+                className="w-full text-left px-2 py-1 rounded mb-0.5 transition-all"
+                style={{ background: "#080e1a", border: "1px solid #1e3a5f" }}>
+                <div className="font-mono text-[8px]" style={{ color: "#a855f7" }}>{ipAddr}</div>
+                <div className="font-mono text-[7px] text-sx-text-muted">{label}</div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
             <div style={labelStyle()} className="mb-1.5">DATA SOURCES</div>
             {[
               ["ipapi.co", "IP geolocation"],
@@ -1205,7 +1620,9 @@ export function OsintPage() {
               ["nvd.nist.gov", "CVE database"],
               ["crt.sh", "CT logs"],
               ["OFAC/EU/UN", "Sanctions lists"],
-              ["libphonenumber-js", "Phone validation"],
+              ["E.164 static data", "Phone validation"],
+              ["rdap.org / arin.net", "WHOIS/RDAP"],
+              ["api.hackertarget.com", "Reverse IP DNS"],
             ].map(([src, desc]) => (
               <div key={src as string} className="py-0.5">
                 <div className="font-mono text-[8px]" style={{ color: "#475569" }}>{src}</div>

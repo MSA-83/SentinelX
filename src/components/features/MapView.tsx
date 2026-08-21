@@ -4,6 +4,7 @@
 // AIS vessel layer, and Planet Labs satellite imagery overlay.
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import type { Map as LeafletMap, TileLayer, LayerGroup, Marker, Polyline, Polygon } from "leaflet";
 import type { SentinelEntity, DomainKey, StreamEvent } from "@/types/entities";
 import { DOMAIN_CONFIGS, HOTSPOT_ZONES } from "@/constants/domains";
@@ -206,6 +207,10 @@ function buildPopupHtml(entity: SentinelEntity): string {
   const liveBadge = isLive
     ? `<div style="color:#22d3ee;font-size:8px;margin-top:4px">● AIS LIVE STREAM</div>` : "";
 
+  // Determine best OSINT target: IP > MMSI > callsign > entity ID
+  const osintTarget: string =
+    String(entity.meta?.ip ?? entity.meta?.mmsi ?? entity.meta?.callsign ?? entity.id).slice(0, 64);
+
   return `
     <div style="font-family:'Share Tech Mono',monospace;min-width:210px">
       <div style="color:${color};font-size:11px;font-weight:bold;margin-bottom:5px;
@@ -218,8 +223,28 @@ function buildPopupHtml(entity: SentinelEntity): string {
       </div>
       ${anomalyBanner}
       ${liveBadge}
-      <div style="margin-top:6px;font-size:8px;color:#1e3a5f;letter-spacing:0.08em">
-        CLICK ENTITY TO OPEN FULL INTELLIGENCE RECORD
+      <div style="margin-top:7px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span style="font-size:8px;color:#1e3a5f;letter-spacing:0.08em">CLICK TO OPEN INTEL RECORD</span>
+        <button
+          data-enrich-target="${osintTarget}"
+          style="
+            background:rgba(0,212,255,0.1);
+            border:1px solid rgba(0,212,255,0.35);
+            color:#00d4ff;
+            font-family:'Share Tech Mono',monospace;
+            font-size:8px;
+            font-weight:bold;
+            letter-spacing:0.1em;
+            padding:3px 8px;
+            border-radius:2px;
+            cursor:pointer;
+            white-space:nowrap;
+            transition:background 0.15s;
+          "
+          title="Run passive OSINT sweep on this entity"
+          onmouseover="this.style.background='rgba(0,212,255,0.2)'"
+          onmouseout="this.style.background='rgba(0,212,255,0.1)'"
+        >⊕ ENRICH ENTITY</button>
       </div>
     </div>`;
 }
@@ -668,6 +693,8 @@ export function MapView({
   const [cableLoading,   setCableLoading]   = useState(false);
   const cableLayerRef    = useRef<LayerGroup | null>(null);
   const [measureMode,   setMeasureMode]   = useState(false);
+  const navigate = useNavigate();
+
   const [measureResult, setMeasureResult] = useState<{
     distKm: number; distNm: number; bearing: number;
     start: [number, number]; end: [number, number];
@@ -681,6 +708,25 @@ export function MapView({
     flir: "FLIR // THERMAL",
     nightvision: "NV // GEN-III",
   };
+
+  // ─── Enrich entity navigation — delegate clicks on [data-enrich-target] in popup
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handleClick = (e: MouseEvent) => {
+      const btn = (e.target as HTMLElement).closest("[data-enrich-target]");
+      if (!btn) return;
+      const target = (btn as HTMLElement).dataset.enrichTarget ?? "";
+      if (!target) return;
+      e.stopPropagation();
+      // Close all open popups
+      mapRef.current?.closePopup();
+      navigate(`/osint?target=${encodeURIComponent(target)}&autorun=true`);
+    };
+    container.addEventListener("click", handleClick);
+    return () => container.removeEventListener("click", handleClick);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leafletReady]);
 
   // ─── Great-circle helpers ────────────────────────────────────────────────────
   function gcDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {

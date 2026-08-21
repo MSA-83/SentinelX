@@ -13,6 +13,20 @@ type OsintTool =
   | "ip" | "dns" | "whois" | "bgp" | "mac"
   | "cve" | "certs" | "sanctions" | "phone" | "sweep";
 
+interface PhoneResult {
+  number: string;
+  internationalFormat: string;
+  nationalFormat: string;
+  countryCode: string;
+  countryName: string;
+  dialingCode: string;
+  lineType: string;
+  valid: boolean;
+  region: string;
+  timezone: string;
+  carrier: string;
+}
+
 interface IpResult {
   ip: string; city: string; region: string; country_name: string;
   org: string; asn?: string; latitude: number; longitude: number;
@@ -514,6 +528,254 @@ function SanctionsTool() {
   );
 }
 
+// ─── Country metadata (dialing code → country/region/tz) ───────────────────────
+
+const COUNTRY_META: Record<string, { name: string; region: string; tz: string }> = {
+  "1":   { name: "United States / Canada", region: "North America",   tz: "America/New_York" },
+  "7":   { name: "Russia / Kazakhstan",    region: "Eastern Europe",  tz: "Europe/Moscow" },
+  "20":  { name: "Egypt",                  region: "North Africa",    tz: "Africa/Cairo" },
+  "27":  { name: "South Africa",           region: "Southern Africa", tz: "Africa/Johannesburg" },
+  "30":  { name: "Greece",                 region: "Southern Europe", tz: "Europe/Athens" },
+  "31":  { name: "Netherlands",            region: "Western Europe",  tz: "Europe/Amsterdam" },
+  "32":  { name: "Belgium",                region: "Western Europe",  tz: "Europe/Brussels" },
+  "33":  { name: "France",                 region: "Western Europe",  tz: "Europe/Paris" },
+  "34":  { name: "Spain",                  region: "Southern Europe", tz: "Europe/Madrid" },
+  "36":  { name: "Hungary",                region: "Central Europe",  tz: "Europe/Budapest" },
+  "39":  { name: "Italy",                  region: "Southern Europe", tz: "Europe/Rome" },
+  "40":  { name: "Romania",                region: "Eastern Europe",  tz: "Europe/Bucharest" },
+  "41":  { name: "Switzerland",            region: "Central Europe",  tz: "Europe/Zurich" },
+  "43":  { name: "Austria",                region: "Central Europe",  tz: "Europe/Vienna" },
+  "44":  { name: "United Kingdom",         region: "Western Europe",  tz: "Europe/London" },
+  "45":  { name: "Denmark",                region: "Northern Europe", tz: "Europe/Copenhagen" },
+  "46":  { name: "Sweden",                 region: "Northern Europe", tz: "Europe/Stockholm" },
+  "47":  { name: "Norway",                 region: "Northern Europe", tz: "Europe/Oslo" },
+  "48":  { name: "Poland",                 region: "Central Europe",  tz: "Europe/Warsaw" },
+  "49":  { name: "Germany",                region: "Central Europe",  tz: "Europe/Berlin" },
+  "51":  { name: "Peru",                   region: "South America",   tz: "America/Lima" },
+  "52":  { name: "Mexico",                 region: "North America",   tz: "America/Mexico_City" },
+  "54":  { name: "Argentina",              region: "South America",   tz: "America/Argentina/Buenos_Aires" },
+  "55":  { name: "Brazil",                 region: "South America",   tz: "America/Sao_Paulo" },
+  "56":  { name: "Chile",                  region: "South America",   tz: "America/Santiago" },
+  "57":  { name: "Colombia",               region: "South America",   tz: "America/Bogota" },
+  "58":  { name: "Venezuela",              region: "South America",   tz: "America/Caracas" },
+  "60":  { name: "Malaysia",               region: "Southeast Asia",  tz: "Asia/Kuala_Lumpur" },
+  "61":  { name: "Australia",              region: "Oceania",         tz: "Australia/Sydney" },
+  "62":  { name: "Indonesia",              region: "Southeast Asia",  tz: "Asia/Jakarta" },
+  "63":  { name: "Philippines",            region: "Southeast Asia",  tz: "Asia/Manila" },
+  "64":  { name: "New Zealand",            region: "Oceania",         tz: "Pacific/Auckland" },
+  "65":  { name: "Singapore",              region: "Southeast Asia",  tz: "Asia/Singapore" },
+  "66":  { name: "Thailand",               region: "Southeast Asia",  tz: "Asia/Bangkok" },
+  "81":  { name: "Japan",                  region: "East Asia",       tz: "Asia/Tokyo" },
+  "82":  { name: "South Korea",            region: "East Asia",       tz: "Asia/Seoul" },
+  "84":  { name: "Vietnam",                region: "Southeast Asia",  tz: "Asia/Ho_Chi_Minh" },
+  "86":  { name: "China",                  region: "East Asia",       tz: "Asia/Shanghai" },
+  "90":  { name: "Turkey",                 region: "Middle East",     tz: "Europe/Istanbul" },
+  "91":  { name: "India",                  region: "South Asia",      tz: "Asia/Kolkata" },
+  "92":  { name: "Pakistan",               region: "South Asia",      tz: "Asia/Karachi" },
+  "93":  { name: "Afghanistan",            region: "South Asia",      tz: "Asia/Kabul" },
+  "94":  { name: "Sri Lanka",              region: "South Asia",      tz: "Asia/Colombo" },
+  "95":  { name: "Myanmar",                region: "Southeast Asia",  tz: "Asia/Rangoon" },
+  "98":  { name: "Iran",                   region: "Middle East",     tz: "Asia/Tehran" },
+  "212": { name: "Morocco",                region: "North Africa",    tz: "Africa/Casablanca" },
+  "213": { name: "Algeria",                region: "North Africa",    tz: "Africa/Algiers" },
+  "216": { name: "Tunisia",                region: "North Africa",    tz: "Africa/Tunis" },
+  "218": { name: "Libya",                  region: "North Africa",    tz: "Africa/Tripoli" },
+  "220": { name: "Gambia",                 region: "West Africa",     tz: "Africa/Banjul" },
+  "234": { name: "Nigeria",                region: "West Africa",     tz: "Africa/Lagos" },
+  "254": { name: "Kenya",                  region: "East Africa",     tz: "Africa/Nairobi" },
+  "255": { name: "Tanzania",               region: "East Africa",     tz: "Africa/Dar_es_Salaam" },
+  "256": { name: "Uganda",                 region: "East Africa",     tz: "Africa/Kampala" },
+  "380": { name: "Ukraine",                region: "Eastern Europe",  tz: "Europe/Kiev" },
+  "381": { name: "Serbia",                 region: "Eastern Europe",  tz: "Europe/Belgrade" },
+  "385": { name: "Croatia",                region: "Eastern Europe",  tz: "Europe/Zagreb" },
+  "386": { name: "Slovenia",               region: "Central Europe",  tz: "Europe/Ljubljana" },
+  "420": { name: "Czech Republic",          region: "Central Europe",  tz: "Europe/Prague" },
+  "421": { name: "Slovakia",               region: "Central Europe",  tz: "Europe/Bratislava" },
+  "852": { name: "Hong Kong",              region: "East Asia",       tz: "Asia/Hong_Kong" },
+  "853": { name: "Macau",                  region: "East Asia",       tz: "Asia/Macau" },
+  "886": { name: "Taiwan",                 region: "East Asia",       tz: "Asia/Taipei" },
+  "966": { name: "Saudi Arabia",           region: "Middle East",     tz: "Asia/Riyadh" },
+  "971": { name: "United Arab Emirates",   region: "Middle East",     tz: "Asia/Dubai" },
+  "972": { name: "Israel",                 region: "Middle East",     tz: "Asia/Jerusalem" },
+  "973": { name: "Bahrain",                region: "Middle East",     tz: "Asia/Bahrain" },
+  "974": { name: "Qatar",                  region: "Middle East",     tz: "Asia/Qatar" },
+  "975": { name: "Bhutan",                 region: "South Asia",      tz: "Asia/Thimphu" },
+  "976": { name: "Mongolia",               region: "East Asia",       tz: "Asia/Ulaanbaatar" },
+  "977": { name: "Nepal",                  region: "South Asia",      tz: "Asia/Kathmandu" },
+  "994": { name: "Azerbaijan",             region: "Caucasus",        tz: "Asia/Baku" },
+  "995": { name: "Georgia",                region: "Caucasus",        tz: "Asia/Tbilisi" },
+  "996": { name: "Kyrgyzstan",             region: "Central Asia",    tz: "Asia/Bishkek" },
+  "998": { name: "Uzbekistan",             region: "Central Asia",    tz: "Asia/Tashkent" },
+};
+
+function resolveCountryFromDialCode(digits: string): { name: string; region: string; tz: string; dialCode: string } | null {
+  // Try 3-digit, then 2-digit, then 1-digit prefixes
+  for (const len of [3, 2, 1]) {
+    const prefix = digits.slice(0, len);
+    if (COUNTRY_META[prefix]) return { ...COUNTRY_META[prefix], dialCode: "+" + prefix };
+  }
+  return null;
+}
+
+const LINE_TYPE_INFO: Record<string, { label: string; color: string; note: string }> = {
+  MOBILE:          { label: "MOBILE",           color: "#22d3ee", note: "Cellular / SIM-based line" },
+  FIXED_LINE:      { label: "FIXED LINE",        color: "#10b981", note: "Landline / PSTN" },
+  FIXED_LINE_OR_MOBILE: { label: "FIXED / MOBILE", color: "#a855f7", note: "Ambiguous — could be either" },
+  VOIP:            { label: "VoIP",              color: "#f59e0b", note: "Internet-based — may be virtual / OSINT evasion" },
+  TOLL_FREE:       { label: "TOLL-FREE",         color: "#94a3b8", note: "0800/1-800 — usually commercial" },
+  PREMIUM_RATE:    { label: "PREMIUM RATE",      color: "#ef4444", note: "Revenue-share number" },
+  SHARED_COST:     { label: "SHARED COST",       color: "#94a3b8", note: "Shared-cost line" },
+  PERSONAL_NUMBER: { label: "PERSONAL NUMBER",   color: "#f59e0b", note: "Personal routing number" },
+  PAGER:           { label: "PAGER",             color: "#475569", note: "Legacy pager service" },
+  UAN:             { label: "UAN",               color: "#94a3b8", note: "Universal Access Number" },
+  UNKNOWN:         { label: "UNKNOWN",           color: "#475569", note: "Type could not be determined" },
+};
+
+// ─── TOOL: Phone Number Lookup ────────────────────────────────────────────────
+
+function PhoneTool() {
+  const [phone, setPhone] = useState("");
+  const [result, setResult] = useState<PhoneResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]   = useState<string | null>(null);
+
+  const lookup = async () => {
+    const raw = phone.trim();
+    if (!raw) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      // Dynamic import of libphonenumber-js
+      const { parsePhoneNumber, isValidPhoneNumber, getNumberType } = await import("libphonenumber-js");
+
+      // Normalise input — ensure it starts with +
+      const normalised = raw.startsWith("+") ? raw : "+" + raw.replace(/^00/, "");
+
+      if (!isValidPhoneNumber(normalised)) {
+        setError("Invalid phone number format. Ensure it includes the country dialing code (e.g. +447911123456).");
+        setLoading(false);
+        return;
+      }
+
+      const parsed = parsePhoneNumber(normalised);
+      const typeKey = getNumberType(normalised) ?? "UNKNOWN";
+      const typeStr = String(typeKey);
+
+      // Country metadata from our static table
+      const digits = normalised.replace("+", "");
+      const meta   = resolveCountryFromDialCode(digits);
+
+      // Carrier heuristic based on line type + region
+      let carrier = "Unknown Carrier";
+      if (typeStr === "MOBILE")     carrier = "Mobile Network Operator (carrier data restricted — use national CNAM API)";
+      if (typeStr === "FIXED_LINE") carrier = "Public Switched Telephone Network (PSTN)";
+      if (typeStr === "VOIP")       carrier = "VoIP Provider (Twilio / Bandwidth / DIDWW / similar)";
+      if (typeStr === "TOLL_FREE")  carrier = "Toll-Free Routing — CNAM not applicable";
+
+      setResult({
+        number:              normalised,
+        internationalFormat: parsed.formatInternational(),
+        nationalFormat:      parsed.formatNational(),
+        countryCode:         parsed.country ?? "Unknown",
+        countryName:         meta?.name  ?? (parsed.country ?? "Unknown"),
+        dialingCode:         meta?.dialCode ?? "+" + (parsed.countryCallingCode ?? "?"),
+        lineType:            typeStr,
+        valid:               true,
+        region:              meta?.region   ?? "Unknown",
+        timezone:            meta?.tz       ?? "Unknown",
+        carrier,
+      });
+    } catch (e: any) {
+      setError(e.message ?? "Phone lookup failed");
+      toast.error(`Phone: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const lineInfo = result ? (LINE_TYPE_INFO[result.lineType] ?? LINE_TYPE_INFO["UNKNOWN"]) : null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={phone}
+          onChange={e => setPhone(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && lookup()}
+          placeholder="+1 202 555 0100  or  +447911123456 (E.164 format)"
+          style={inputStyle()}
+        />
+        <LookupBtn onClick={lookup} loading={loading} label="LOOKUP" />
+      </div>
+
+      {/* Format hint */}
+      <div className="font-mono text-[8px] px-1" style={{ color: "rgba(71,85,105,0.7)" }}>
+        ℹ Include country dialing code — e.g. <span style={{ color: "#00d4ff" }}>+1</span> (US/CA),{" "}
+        <span style={{ color: "#00d4ff" }}>+44</span> (UK),{" "}
+        <span style={{ color: "#00d4ff" }}>+86</span> (CN),{" "}
+        <span style={{ color: "#00d4ff" }}>+91</span> (IN)
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="rounded border px-3 py-2.5 font-mono text-[9px]"
+          style={{ background: "rgba(239,68,68,0.06)", borderColor: "rgba(239,68,68,0.25)", color: "#ef4444" }}>
+          ✗ {error}
+        </div>
+      )}
+
+      {/* Result card */}
+      {result && lineInfo && (
+        <ResultCard title={`PHONE INTEL — ${result.internationalFormat}`} color={lineInfo.color}>
+          {/* Validity + line type banner */}
+          <div className="flex items-center gap-3 pb-2 mb-1" style={{ borderBottom: "1px solid #1e3a5f" }}>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono text-[9px] font-bold px-2 py-0.5 rounded"
+                style={{
+                  background: `${lineInfo.color}14`,
+                  color: lineInfo.color,
+                  border: `1px solid ${lineInfo.color}30`,
+                }}>
+                {lineInfo.label}
+              </span>
+            </div>
+            <span className="font-mono text-[8px] text-sx-green font-bold">✓ VALID</span>
+            <span className="font-mono text-[8px] ml-auto" style={{ color: lineInfo.color }}>
+              {lineInfo.note}
+            </span>
+          </div>
+
+          {/* Main data rows */}
+          {([
+            ["International",  result.internationalFormat],
+            ["National",       result.nationalFormat],
+            ["Country",        `${result.countryName} (${result.countryCode})`],
+            ["Dialing Code",   result.dialingCode],
+            ["Region",         result.region],
+            ["Timezone",       result.timezone],
+            ["Carrier / Type", result.carrier],
+          ] as [string, string][]).map(([k, v]) => (
+            <MetaRow key={k} label={k} value={v} />
+          ))}
+
+          {/* OSINT intelligence note */}
+          <div className="mt-3 px-2 py-2 rounded font-mono text-[8px] leading-relaxed"
+            style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)", color: "rgba(0,212,255,0.5)" }}>
+            <span style={{ color: "#00d4ff", fontWeight: "bold" }}>INTEL NOTE:</span>{" "}
+            {result.lineType === "VOIP"
+              ? "VoIP numbers are commonly used for anonymity, spoofing, or OSINT evasion. Cross-reference with Shodan and ASN lookups."
+              : result.lineType === "MOBILE"
+              ? "Mobile carrier data requires CNAM/HLR lookup API (paid). Cross-reference with SIGINT or social media OSINT."
+              : "Landline subscribers are typically geolocatable to exchange area. Check local telecom registry for legal OSINT access."}
+          </div>
+        </ResultCard>
+      )}
+    </div>
+  );
+}
+
 // ─── TOOL: Sweep (passive recon) ─────────────────────────────────────────────
 
 function SweepTool() {
@@ -700,6 +962,7 @@ const TOOLS: { id: OsintTool; label: string; icon: string; desc: string; compone
   { id: "cve",       label: "CVE SEARCH",           icon: "⚠", desc: "NVD vulnerability database search",               component: CveTool },
   { id: "certs",     label: "CERT TRANSPARENCY",    icon: "🔒", desc: "Subdomain discovery via CT logs (crt.sh)",        component: CertsTool },
   { id: "sanctions", label: "SANCTIONS CHECK",      icon: "⛔", desc: "US-OFAC / EU / UN sanctions list screening",      component: SanctionsTool },
+  { id: "phone",     label: "PHONE LOOKUP",         icon: "☏", desc: "E.164 validation, country, line type, region",    component: PhoneTool },
 ];
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
@@ -897,6 +1160,23 @@ export function OsintPage() {
           </div>
 
           <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
+            <div style={labelStyle()} className="mb-1.5">TEST PHONE NUMBERS</div>
+            {[
+              ["+12025550100", "US — Washington DC"],
+              ["+447911123456", "UK — Mobile"],
+              ["+4930123456",   "DE — Berlin Landline"],
+              ["+819012345678", "JP — Mobile"],
+            ].map(([num, label]) => (
+              <button key={num} onClick={() => setActiveTool("phone")}
+                className="w-full text-left px-2 py-1 rounded mb-0.5 transition-all"
+                style={{ background: "#080e1a", border: "1px solid #1e3a5f" }}>
+                <div className="font-mono text-[8px]" style={{ color: "#22d3ee" }}>{num}</div>
+                <div className="font-mono text-[7px] text-sx-text-muted">{label}</div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
             <div style={labelStyle()} className="mb-1.5">DATA SOURCES</div>
             {[
               ["ipapi.co", "IP geolocation"],
@@ -906,6 +1186,7 @@ export function OsintPage() {
               ["nvd.nist.gov", "CVE database"],
               ["crt.sh", "CT logs"],
               ["OFAC/EU/UN", "Sanctions lists"],
+              ["libphonenumber-js", "Phone validation"],
             ].map(([src, desc]) => (
               <div key={src as string} className="py-0.5">
                 <div className="font-mono text-[8px]" style={{ color: "#475569" }}>{src}</div>

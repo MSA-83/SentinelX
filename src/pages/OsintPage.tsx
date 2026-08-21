@@ -647,41 +647,60 @@ function PhoneTool() {
     setResult(null);
 
     try {
-      // Dynamic import of libphonenumber-js
-      const { parsePhoneNumber, isValidPhoneNumber, getNumberType } = await import("libphonenumber-js");
+      // Normalise to E.164 — strip spaces, dashes, parens
+      const cleaned   = raw.replace(/[\s\-().]/g, "");
+      const normalised = cleaned.startsWith("+") ? cleaned
+                       : cleaned.startsWith("00")  ? "+" + cleaned.slice(2)
+                       : "+" + cleaned;
 
-      // Normalise input — ensure it starts with +
-      const normalised = raw.startsWith("+") ? raw : "+" + raw.replace(/^00/, "");
-
-      if (!isValidPhoneNumber(normalised)) {
-        setError("Invalid phone number format. Ensure it includes the country dialing code (e.g. +447911123456).");
+      // Basic E.164 validation: + followed by 7–15 digits
+      if (!/^\+[1-9]\d{6,14}$/.test(normalised)) {
+        setError("Invalid phone number format. Use E.164 with country code, e.g. +447911123456 or +12025550100.");
         setLoading(false);
         return;
       }
 
-      const parsed = parsePhoneNumber(normalised);
-      const typeKey = getNumberType(normalised) ?? "UNKNOWN";
-      const typeStr = String(typeKey);
-
-      // Country metadata from our static table
-      const digits = normalised.replace("+", "");
+      const digits = normalised.slice(1); // strip leading +
       const meta   = resolveCountryFromDialCode(digits);
+      const dialCode = meta?.dialCode ?? "+" + digits.slice(0, 1);
+      const national  = digits.slice(dialCode.length - 1); // strip dial code
 
-      // Carrier heuristic based on line type + region
+      // Format: international = +XX YYY YYYY, national = local spacing heuristic
+      const intlFormatted  = dialCode + " " + national.replace(/(.{3})(?=.{2})/g, "$1 ").trim();
+      const natFormatted   = national.replace(/^(.{2,4})(.{3,4})(.*)$/, "$1 $2 $3").trim();
+
+      // Line type heuristic — based on known toll-free / VOIP prefix patterns
+      let lineType = "MOBILE";
+      const fullNum = normalised;
+      // Toll-free patterns
+      if (/^\+1(800|888|877|866|855|844|833|822)/.test(fullNum)) lineType = "TOLL_FREE";
+      // UK toll-free / special
+      else if (/^\+44(800|808|3[0-9]{2}|9[0-9]{2})/.test(fullNum)) lineType = "TOLL_FREE";
+      // VOIP / virtual heuristic (numbers starting with known VOIP country+prefix combos)
+      else if (/^\+1(2012|2013|2015|6469|3472)/.test(fullNum)) lineType = "VOIP";
+      // Premium rate (UK 09xx, US 1900)
+      else if (/^\+44(9\d{2}|70\d)/.test(fullNum) || /^\+1900/.test(fullNum)) lineType = "PREMIUM_RATE";
+      // Short numbers suggest fixed / landline in many countries
+      else if (national.length <= 7) lineType = "FIXED_LINE";
+      // US/CA: area codes with known mobile vs landline patterns are too granular — default MOBILE
+      else lineType = "MOBILE";
+
+      // Carrier heuristic
       let carrier = "Unknown Carrier";
-      if (typeStr === "MOBILE")     carrier = "Mobile Network Operator (carrier data restricted — use national CNAM API)";
-      if (typeStr === "FIXED_LINE") carrier = "Public Switched Telephone Network (PSTN)";
-      if (typeStr === "VOIP")       carrier = "VoIP Provider (Twilio / Bandwidth / DIDWW / similar)";
-      if (typeStr === "TOLL_FREE")  carrier = "Toll-Free Routing — CNAM not applicable";
+      if (lineType === "MOBILE")      carrier = "Mobile Network Operator (carrier data restricted — use national CNAM/HLR API)";
+      else if (lineType === "FIXED_LINE")   carrier = "Public Switched Telephone Network (PSTN)";
+      else if (lineType === "VOIP")         carrier = "VoIP Provider (Twilio / Bandwidth / DIDWW / similar)";
+      else if (lineType === "TOLL_FREE")    carrier = "Toll-Free Routing — CNAM not applicable";
+      else if (lineType === "PREMIUM_RATE") carrier = "Premium Rate Service Provider";
 
       setResult({
         number:              normalised,
-        internationalFormat: parsed.formatInternational(),
-        nationalFormat:      parsed.formatNational(),
-        countryCode:         parsed.country ?? "Unknown",
-        countryName:         meta?.name  ?? (parsed.country ?? "Unknown"),
-        dialingCode:         meta?.dialCode ?? "+" + (parsed.countryCallingCode ?? "?"),
-        lineType:            typeStr,
+        internationalFormat: intlFormatted,
+        nationalFormat:      natFormatted,
+        countryCode:         (meta ? dialCode.replace("+","").slice(0,2) : "??").toUpperCase(),
+        countryName:         meta?.name ?? "Unknown Country",
+        dialingCode:         dialCode,
+        lineType,
         valid:               true,
         region:              meta?.region   ?? "Unknown",
         timezone:            meta?.tz       ?? "Unknown",

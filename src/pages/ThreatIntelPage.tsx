@@ -213,7 +213,7 @@ function IntelFeed() {
         </div>
       </div>
 
-      <div className="divide-y" style={{ divideColor: "rgba(30,58,95,0.4)" }}>
+      <div className="divide-y divide-sx-border-dim">
         {loading ? (
           Array.from({ length: 5 }, (_, i) => (
             <div key={i} className="px-4 py-3 animate-pulse">
@@ -326,7 +326,7 @@ function MarketsPanel() {
         style={{ background: "#0a0f1e", borderColor: "rgba(30,58,95,0.6)" }}>
         <span className="font-mono text-[9px] text-sx-text-muted tracking-widest">📈 DEFENSE / COMMODITIES INDICATORS</span>
       </div>
-      <div className="divide-y" style={{ divideColor: "rgba(30,58,95,0.4)" }}>
+      <div className="divide-y divide-sx-border-dim">
         {loading
           ? Array.from({ length: 4 }, (_, i) => (
               <div key={i} className="px-4 py-2 animate-pulse">
